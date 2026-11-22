@@ -268,7 +268,8 @@ func (c *Core) UpdateSubscriberWithLists(id int, sub models.Subscriber, listIDs 
 	out, err := c.st.Subscribers().UpdateWithLists(bg, id,
 		store.SubscriberInput{Email: sub.Email, Name: strings.TrimSpace(sub.Name), Status: sub.Status, Attribs: sub.Attribs},
 		store.ListChange{ListIDs: listIDs, ListUUIDs: listUUIDs, Status: subStatus, ReplaceExisting: deleteLists,
-			Permitted: scopeOf(permittedListIDs == nil, permittedListIDs), AllowResubscribe: allowResubscribe})
+			// Upstream treats an empty (or nil) permitted list as "all lists".
+			Permitted: scopeOf(len(permittedListIDs) == 0, permittedListIDs), AllowResubscribe: allowResubscribe})
 	if errors.Is(err, store.ErrNotFound) {
 		return models.Subscriber{}, false, echo.NewHTTPError(http.StatusBadRequest,
 			c.i18n.Ts("globals.messages.notFound", "name",

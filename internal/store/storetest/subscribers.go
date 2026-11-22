@@ -218,6 +218,15 @@ func testSubscribers(t *testing.T, st store.Store, fx Fixtures) {
 	must(t, err)
 	eq(t, subStatuses(t, st, f.cara.ID), map[int]string{f.privSingle.ID: "confirmed", f.pubDouble.ID: "unconfirmed"}, "replace within permitted lists")
 
+	// Replacing with all lists permitted deletes every other subscription.
+	fay, err := S.Insert(ctx, store.SubscriberInput{Email: "fay@example.com", Name: "Fay", Status: "enabled", Attribs: models.JSON{}},
+		store.ListChange{ListIDs: []int{f.pubSingle.ID, f.pubDouble.ID}, Status: "confirmed"})
+	must(t, err)
+	_, err = S.UpdateWithLists(ctx, fay.ID, store.SubscriberInput{}, store.ListChange{ListIDs: []int{f.privSingle.ID}, Status: "confirmed",
+		ReplaceExisting: true, Permitted: all})
+	must(t, err)
+	eq(t, subStatuses(t, st, fay.ID), map[int]string{f.privSingle.ID: "confirmed"}, "replace, all lists permitted")
+
 	// Re-subscribing: an unsubscribed subscription stays unsubscribed unless
 	// AllowResubscribe; confirmed ones stay confirmed.
 	must(t, st.Subscriptions().Unsubscribe(ctx, []int{f.cara.ID}, []int{f.pubDouble.ID}, nil))
@@ -298,6 +307,7 @@ func testSubscribers(t *testing.T, st store.Store, fx Fixtures) {
 	must(t, err)
 	eq(t, n, 3, "delete blocklisted (ben, cara, eve)")
 	must(t, S.Delete(ctx, nil, []string{f.anna.UUID}))
+	must(t, S.Delete(ctx, []int{fay.ID}, nil))
 	_, err = S.Get(ctx, store.SubscriberRef{ID: f.anna.ID})
 	isErr(t, err, store.ErrNotFound, "deleted by uuid")
 	_ = fx

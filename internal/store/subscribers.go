@@ -217,9 +217,10 @@ type SubscriptionStore interface {
 
 	// Add subscribes subscribers to lists. With a status, new and
 	// existing subscriptions get it; with status "", new ones are
-	// "unconfirmed" and existing ones keep theirs. For AddByFilter, f
-	// selects the subscribers (f.ListIDs = source lists), listIDs are
-	// the target lists.
+	// "unconfirmed" and existing ones keep theirs. AddByFilter only adds
+	// new subscriptions (existing ones are left alone, whatever the
+	// status); f selects the subscribers (f.ListIDs = source lists),
+	// listIDs are the target lists.
 	Add(ctx context.Context, subIDs, listIDs []int, status string) error
 	AddByFilter(ctx context.Context, f SubscriberFilter, listIDs []int, status string) (int, error)
 

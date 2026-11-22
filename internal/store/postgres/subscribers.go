@@ -313,7 +313,8 @@ func (s subscribers) UpdateWithLists(ctx context.Context, id int, in store.Subsc
 	if err != nil {
 		return models.Subscriber{}, err
 	}
-	var permitted []int
+	// update-subscriber-with-lists takes an empty array as "all lists".
+	permitted := []int{}
 	if !lists.Permitted.All {
 		permitted = lists.Permitted.IDs
 	}

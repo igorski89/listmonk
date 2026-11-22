@@ -92,7 +92,7 @@ func (s *Store) Close() error {
 
 func (s *Store) Subscribers() store.SubscriberStore     { return nySubscribers{} }
 func (s *Store) Subscriptions() store.SubscriptionStore { return nySubscriptions{} }
-func (s *Store) Lists() store.ListStore                 { return nyLists{} }
+func (s *Store) Lists() store.ListStore                 { return lists{s} }
 func (s *Store) Campaigns() store.CampaignStore         { return nyCampaigns{} }
 func (s *Store) Tracking() store.TrackingStore          { return nyTracking{} }
 func (s *Store) Bounces() store.BounceStore             { return nyBounces{} }
@@ -298,6 +298,12 @@ func orderBy(s store.Sort, fields map[string]string, def string) string {
 		expr = def
 	}
 	return expr + " " + sortDir(s)
+}
+
+// withOrder fills a query's {ORDER} placeholder with an ORDER BY
+// expression built by orderBy (never with user input).
+func withOrder(query, order string) string {
+	return strings.Replace(query, "{ORDER}", order, 1)
 }
 
 // inTx runs fn in a write transaction, committing if it returns nil.
