@@ -276,6 +276,36 @@ func testAnalytics(t *testing.T, st store.Store, o store.Options) {
 		t.Errorf("unknown metric: want an error")
 	}
 
+	// Every interval buckets the same events; the bucket timestamps are
+	// truncated to the interval's start.
+	now := time.Now().UTC()
+	for _, iv := range []string{"hour", "day", "week", "month"} {
+		out, err := A.Counts(ctx, store.AnalyticsQuery{Subject: store.AnalyticsCampaigns, IDs: []int{camp.ID}, Metric: "total_views", From: from, To: to, Interval: iv})
+		must(t, err)
+		n := 0
+		for _, c := range out {
+			n += c.Count
+		}
+		eq(t, n, 3, "total views by "+iv)
+		if len(out) == 0 {
+			continue
+		}
+		ts := out[0].Timestamp.UTC()
+		var want time.Time
+		switch iv {
+		case "hour":
+			want = now.Truncate(time.Hour)
+		case "day":
+			want = time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+		case "week":
+			d := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+			want = d.AddDate(0, 0, -((int(d.Weekday()) + 6) % 7))
+		case "month":
+			want = time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
+		}
+		eq(t, ts.Equal(want), true, "bucket start by "+iv+" ("+ts.String()+" vs "+want.String()+")")
+	}
+
 	links, err := A.Links(ctx, store.AnalyticsCampaigns, []int{camp.ID}, from, to)
 	must(t, err)
 	eq(t, len(links), 1, "campaign links")
@@ -324,8 +354,38 @@ func testAnalytics(t *testing.T, st store.Store, o store.Options) {
 	}
 	raw, err = st.Stats().ListCharts(ctx, f.privSingle.ID, true)
 	must(t, err)
-	if !json.Valid(raw) {
-		t.Errorf("list charts (views): not JSON")
+	var lc map[string][]struct {
+		Date  string `json:"date"`
+		Count int    `json:"count"`
 	}
+	must(t, json.Unmarshal(raw, &lc))
+	sumOf := func(k string) int {
+		n := 0
+		for _, p := range lc[k] {
+			n += p.Count
+		}
+		return n
+	}
+	// Weekly buckets over three months (13 or 14 weeks), Monday dates.
+	if n := len(lc["subscriptions"]); n < 13 || n > 15 {
+		t.Errorf("list charts: %d weekly buckets", n)
+	}
+	eq(t, len(lc["campaign_views"]), len(lc["subscriptions"]), "list charts: same buckets")
+	eq(t, sumOf("subscriptions"), 3, "list charts: subscriptions")
+	eq(t, sumOf("campaign_views"), 3, "list charts: views")
+	if d, err := time.Parse("2006-01-02", lc["subscriptions"][0].Date); err != nil || d.Weekday() != time.Monday {
+		t.Errorf("list charts: bucket %q isn't a Monday", lc["subscriptions"][0].Date)
+	}
+	ch, err := st.Subscribers().Charts(ctx, f.anna.ID, all)
+	must(t, err)
+	var sc map[string][]struct {
+		Count int `json:"count"`
+	}
+	must(t, json.Unmarshal(ch, &sc))
+	n := 0
+	for _, p := range sc["campaign_views"] {
+		n += p.Count
+	}
+	eq(t, n, 2, "subscriber charts: anna's views")
 	must(t, st.Stats().Refresh(ctx, store.StatsListSubscribers))
 }

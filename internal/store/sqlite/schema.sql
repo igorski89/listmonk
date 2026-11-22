@@ -1,5 +1,8 @@
--- listmonk schema for SQLite. Baseline: upstream schema.sql at v7.0.0
--- (v7.0.0-beta.2). Translation rules:
+-- listmonk schema for SQLite. Baseline: upstream schema.sql as of tag
+-- v7.0.0-beta.2 (recorded as schema version v7.0.0, like upstream's
+-- install). Upstream's v7.0.0 migration may still change before the final
+-- release: on rebase, diff it and add an idempotent SQLite twin.
+-- Translation rules:
 --   SERIAL -> INTEGER PRIMARY KEY AUTOINCREMENT (ids are never reused, as
 --   with Postgres sequences); uuid -> TEXT; enums -> TEXT + CHECK;
 --   JSONB -> TEXT (JSON); arrays -> TEXT (JSON array); timestamps ->

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/jmoiron/sqlx"
 	"github.com/knadh/listmonk/internal/store"
@@ -20,7 +21,9 @@ import (
 //     is denied;
 //   - reads only from the tables a subscriber filter may use (as upstream's
 //     allowed list) and json_each/json_tree;
-//   - only the functions below.
+//   - only the functions below; no recursive CTEs;
+//   - a time limit (sandboxTimeout), so one runaway expression can't hold
+//     the sandbox connections.
 
 var sandboxTables = map[string]bool{
 	"subscribers":      true,
@@ -37,6 +40,10 @@ var sandboxTables = map[string]bool{
 }
 
 var sandboxFuncs = map[string]bool{}
+
+// sandboxTimeout bounds one sandboxed statement (a page of subscribers,
+// a count, an export batch).
+const sandboxTimeout = 60 * time.Second
 
 func init() {
 	for _, f := range strings.Fields(`
@@ -61,8 +68,6 @@ func sandboxPolicy(action msqlite.AuthorizerActionCode, arg1, arg2, _, _ string)
 		if sandboxFuncs[strings.ToLower(arg2)] {
 			return msqlite.AuthorizerOK
 		}
-	case msqlite.AuthRecursive:
-		return msqlite.AuthorizerOK
 	}
 	return msqlite.AuthorizerDeny
 }
@@ -71,6 +76,9 @@ func sandboxPolicy(action msqlite.AuthorizerActionCode, arg1, arg2, _, _ string)
 // Statements the policy rejects fail at prepare time; they come back as
 // *store.InvalidQueryError.
 func (s *Store) sandboxed(ctx context.Context, fn func(*sqlx.Conn) error) error {
+	ctx, cancel := context.WithTimeout(ctx, sandboxTimeout)
+	defer cancel()
+
 	conn, err := s.sb.Connx(ctx)
 	if err != nil {
 		return wrap(err)

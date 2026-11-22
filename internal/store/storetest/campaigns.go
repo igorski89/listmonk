@@ -337,6 +337,25 @@ func testSending(t *testing.T, st store.Store) {
 	must(t, err)
 	eq(t, len(stats), 0, "running stats out of scope")
 
+	// A scheduled campaign whose send time has passed is due and starts;
+	// one in the future isn't.
+	past := newCampaign("scheduled past")
+	past.SendAt = null.TimeFrom(time.Now().Add(-time.Minute))
+	due, err := C.Create(ctx, past, []int{f.privSingle.ID}, nil)
+	must(t, err)
+	must(t, C.SetStatus(ctx, due.ID, "scheduled"))
+	next, err = C.Next(ctx, []store.CampaignProgress{{ID: regular.ID}, {ID: optin.ID}})
+	must(t, err)
+	eq(t, len(next), 1, "past scheduled campaign due (future one not)")
+	if len(next) == 1 {
+		eq(t, next[0].ID, due.ID, "the due campaign")
+	}
+	got, _ = C.Get(ctx, store.CampaignRef{ID: due.ID}, store.TemplateCampaign)
+	eq(t, got.Status, "running", "due scheduled campaign started")
+	eq(t, got.StartedAt.Valid, true, "started_at set")
+	got, _ = C.Get(ctx, store.CampaignRef{ID: later.ID}, store.TemplateCampaign)
+	eq(t, got.Status, "scheduled", "future campaign still scheduled")
+
 	// A campaign with no lists has no recipients.
 	empty, err := C.Create(ctx, newCampaign("empty"), nil, nil)
 	must(t, err)

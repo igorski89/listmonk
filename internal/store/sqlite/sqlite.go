@@ -66,7 +66,14 @@ func Open(path string, lo *log.Logger) (*Store, error) {
 	}
 	w.SetMaxOpenConns(1)
 
-	r, err := sqlx.Connect("sqlite", "file:"+path+"?"+q.Encode())
+	// The reader pool must never write: query_only makes a stray write
+	// fail loudly (on every pooled connection, via the DSN).
+	rq := url.Values{}
+	for k, v := range q {
+		rq[k] = v
+	}
+	rq.Add("_pragma", "query_only(1)")
+	r, err := sqlx.Connect("sqlite", "file:"+path+"?"+rq.Encode())
 	if err != nil {
 		w.Close()
 		return nil, err
