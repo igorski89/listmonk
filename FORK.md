@@ -55,7 +55,7 @@ Skipped without the DSN, so `go test ./...` passes without Docker.
 - [x] Self-check: breaking a row mapping turns the suite red.
 - [ ] SQLite store (`internal/store/sqlite`, modernc.org/sqlite, no cgo).
       Run: `go test ./internal/store/sqlite/ -timeout 120s`. Passing suite
-      sections so far: Schema, Settings.
+      sections so far: Schema, Settings, Lists, SubscriberFilters, Subscriptions, Import.
 
 ### Deviations from upstream behaviour (to review)
 

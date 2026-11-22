@@ -34,6 +34,7 @@ var schemaSQL string
 type Store struct {
 	w   *sqlx.DB // writer: one connection
 	r   *sqlx.DB // readers
+	sb  *sqlx.DB // sandbox for user SQL expressions: read-only, query_only
 	opt store.Options
 	log *log.Logger
 
@@ -69,7 +70,21 @@ func Open(path string, lo *log.Logger) (*Store, error) {
 	}
 	r.SetMaxOpenConns(8)
 
-	return &Store{w: w.Unsafe(), r: r.Unsafe(), log: lo}, nil
+	sq := url.Values{}
+	for k, v := range q {
+		sq[k] = v
+	}
+	sq.Add("_pragma", "query_only(1)")
+	sq.Set("mode", "ro")
+	sb, err := sqlx.Connect("sqlite", "file:"+path+"?"+sq.Encode())
+	if err != nil {
+		w.Close()
+		r.Close()
+		return nil, err
+	}
+	sb.SetMaxOpenConns(2)
+
+	return &Store{w: w.Unsafe(), r: r.Unsafe(), sb: sb.Unsafe(), log: lo}, nil
 }
 
 // Configure applies the settings-dependent options.
@@ -82,6 +97,7 @@ func (s *Store) Configure(o store.Options) error {
 func (s *Store) Dialect() string { return "sqlite" }
 
 func (s *Store) Close() error {
+	s.sb.Close()
 	err1 := s.r.Close()
 	err2 := s.w.Close()
 	if err1 != nil {
@@ -90,8 +106,8 @@ func (s *Store) Close() error {
 	return err2
 }
 
-func (s *Store) Subscribers() store.SubscriberStore     { return nySubscribers{} }
-func (s *Store) Subscriptions() store.SubscriptionStore { return nySubscriptions{} }
+func (s *Store) Subscribers() store.SubscriberStore     { return subscribers{s} }
+func (s *Store) Subscriptions() store.SubscriptionStore { return subscriptions{s} }
 func (s *Store) Lists() store.ListStore                 { return lists{s} }
 func (s *Store) Campaigns() store.CampaignStore         { return nyCampaigns{} }
 func (s *Store) Tracking() store.TrackingStore          { return nyTracking{} }
@@ -166,6 +182,8 @@ func wrap(err error) error {
 	}
 	return dbErr
 }
+
+func asConflict(err error, ce **store.ConflictError) bool { return errors.As(err, ce) }
 
 // isFKErr reports whether err is a foreign key violation.
 func isFKErr(err error) bool {
@@ -299,6 +317,8 @@ func orderBy(s store.Sort, fields map[string]string, def string) string {
 	}
 	return expr + " " + sortDir(s)
 }
+
+func replaceAll(s, old, new string) string { return strings.ReplaceAll(s, old, new) }
 
 // withOrder fills a query's {ORDER} placeholder with an ORDER BY
 // expression built by orderBy (never with user input).
