@@ -210,8 +210,9 @@ type SubscriberStore interface {
 
 // SubscriptionStore is the subscriber <-> list relation.
 type SubscriptionStore interface {
-	// List returns a subscriber's subscriptions; allLists includes
-	// unsubscribed ones.
+	// List returns the lists a subscriber has a subscription to (any
+	// status, unsubscribed included); with allLists, every list, the
+	// subscription fields null where there is none.
 	List(ctx context.Context, ref SubscriberRef, allLists bool) ([]models.Subscription, error)
 
 	// Add subscribes subscribers to lists. With a status, new and
@@ -235,6 +236,7 @@ type SubscriptionStore interface {
 	// v7.0.0 only "unconfirmed" ones change; v7.0.0-beta.2 confirms any.
 	ConfirmOptin(ctx context.Context, subUUID string, listUUIDs []string, meta models.JSON) error
 
-	// DeleteUnconfirmed deletes unconfirmed subscriptions created before t.
+	// DeleteUnconfirmed deletes unconfirmed subscriptions to double opt-in
+	// lists created before t.
 	DeleteUnconfirmed(ctx context.Context, before time.Time) (int, error)
 }

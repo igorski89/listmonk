@@ -229,9 +229,24 @@ func (s roles) upsertListPermissions(ctx context.Context, tx *sqlx.Tx, roleID in
 	return err
 }
 
+// roleInUse reports whether err is a role still referenced by users.
+// (Upstream checked for "users_role_id_fkey", a constraint that doesn't
+// exist in schema.sql, so the check never matched.)
+func roleInUse(err error) bool {
+	e := pqErr(err)
+	if e == nil {
+		return false
+	}
+	switch e.Constraint {
+	case "users_role_id_fkey", "users_user_role_id_fkey", "users_list_role_id_fkey":
+		return true
+	}
+	return false
+}
+
 func (s roles) DeleteListPermission(ctx context.Context, roleID, listID int) error {
 	if _, err := s.q.DeleteListPermission.ExecContext(ctx, roleID, listID); err != nil {
-		if e := pqErr(err); e != nil && e.Constraint == "users_role_id_fkey" {
+		if roleInUse(err) {
 			return store.ErrInUse
 		}
 		return wrap(err)
@@ -241,7 +256,7 @@ func (s roles) DeleteListPermission(ctx context.Context, roleID, listID int) err
 
 func (s roles) Delete(ctx context.Context, id int) error {
 	if _, err := s.q.DeleteRole.ExecContext(ctx, id); err != nil {
-		if e := pqErr(err); e != nil && e.Constraint == "users_role_id_fkey" {
+		if roleInUse(err) {
 			return store.ErrInUse
 		}
 		return wrap(err)

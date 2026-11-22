@@ -34,6 +34,27 @@ Every commit builds, vets and passes `tests/parity/compare.sh`.
       `store/postgres/rows.go`; `lib/pq` now only in `store/postgres` and
       `internal/migrations`
 
+## Step 2: conformance suite
+
+`internal/store/storetest`: one suite every backend must pass, written
+against the interfaces, asserting values (filters, scopes, sort/paging,
+side effects, error mapping, JSON shapes) with Postgres as the reference.
+Run on Postgres:
+
+    tests/parity/setup.sh
+    LISTMONK_TEST_PG_DSN="host=127.0.0.1 port=55432 user=listmonk password=listmonk dbname=listmonk sslmode=disable" \
+      go test ./internal/store/postgres/ -coverpkg=./internal/store/postgres
+
+Skipped without the DSN, so `go test ./...` passes without Docker.
+
+- [x] Suite green on Postgres, 81% statement coverage of `store/postgres`.
+      Not covered: running actual migrations (needs an old schema), the
+      cached subscriber-count path (upstream's query code never takes it:
+      it passes "TRUE", not "", as the condition), transaction-begin
+      failures, "role in use" on DeleteListPermission.
+- [x] Self-check: breaking a row mapping turns the suite red.
+- [ ] SQLite store
+
 ### Deviations from upstream behaviour (to review)
 
 None show in the parity session. Known differences on paths it doesn't
@@ -53,5 +74,10 @@ exercise:
   `cmd/manager_store.go` removed: unused, and it ran the wrong statement.
 - `--install --idempotent` checks for the `templates` table, not
   `settings` (both are created by the schema).
+- Deleting a role that users still have: 400 "can't delete role"
+  (upstream: 500 with the database error; it checked for a constraint
+  name, `users_role_id_fkey`, that schema.sql doesn't have).
+- Subscriptions can be listed by subscriber ID alone (upstream's query
+  failed on an empty UUID; upstream only ever called it with a UUID).
 - A few error messages on internal-failure paths (failed transaction
   begin, failed lazy list load) are worded like their neighbours.

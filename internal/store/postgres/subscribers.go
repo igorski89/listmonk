@@ -536,7 +536,7 @@ func dbErrMsg(err error) string {
 
 func (s subscriptions) List(ctx context.Context, ref store.SubscriberRef, allLists bool) ([]models.Subscription, error) {
 	var rows []subscriptionRow
-	if err := s.q.GetSubscriptions.SelectContext(ctx, &rows, ref.ID, ref.UUID, allLists); err != nil {
+	if err := s.q.GetSubscriptions.SelectContext(ctx, &rows, ref.ID, uuidArg(ref.UUID), allLists); err != nil {
 		return nil, wrap(err)
 	}
 	if rows == nil {
