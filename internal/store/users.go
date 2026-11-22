@@ -127,9 +127,11 @@ type RoleStore interface {
 	// does this in two statements without a transaction.
 	UpdateListRole(ctx context.Context, id int, r auth.ListRole) (auth.ListRole, error)
 
-	// DeleteListPermission removes one list from a list role.
+	// DeleteListPermission removes one list from a list role; ErrInUse if
+	// the database refuses it because users reference the role.
 	DeleteListPermission(ctx context.Context, roleID, listID int) error
 
-	// Delete deletes a role; ErrNotFound if missing.
+	// Delete deletes a role (a missing one is a no-op); ErrInUse if users
+	// still have it.
 	Delete(ctx context.Context, id int) error
 }

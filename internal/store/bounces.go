@@ -48,7 +48,9 @@ type BounceStore interface {
 	// bounces and unsubscribes them from all lists.
 	BlocklistSubscribers(ctx context.Context, f BounceFilter) error
 
-	// Delete deletes the matching bounces; returns how many.
+	// Delete deletes the matching bounces; returns how many. Unlike the
+	// general rule above, All=true applies the condition fields even when
+	// IDs are set (upstream's delete-bounces).
 	Delete(ctx context.Context, f BounceFilter) (int, error)
 
 	// DeleteForSubscriber deletes all bounces of one subscriber.

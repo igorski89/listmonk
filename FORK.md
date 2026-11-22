@@ -12,6 +12,13 @@ history: SGNL `instance/docs/PLAN-listmonk-sqlite.md`.
 - Branch `sqlite`, based on upstream tag `v7.0.0-beta.2`; upstream
   releases are merged by tag.
 
+The parity session covers: lists, subscribers (incl. SQL filters,
+forbidden-table and write attempts), import, templates, media, campaigns
+(incl. a real send to mailpit), tracking, public pages, bounces, users,
+roles, password login and sessions (incl. password change logging out
+other sessions), a list-scoped API user, maintenance. Run it also with
+`VERSION=v7.0.0-beta.2` for the non-final-build startup path.
+
 ## Step 1: app on the store interfaces, Postgres only, no behaviour change
 
 Every commit builds, vets and passes `tests/parity/compare.sh`.
@@ -21,6 +28,8 @@ Every commit builds, vets and passes `tests/parity/compare.sh`.
 - [x] `store/postgres`: implementation wrapping upstream `queries/*.sql`
 - [x] core + cmd + importer + bounce + auth + manager on the store (parity OK)
 - [x] `models.Queries` used only inside `store/postgres`
+- [x] Parity also with password sessions, a list-scoped user and the
+      beta (non-final) startup path; interface comments match the store
 - [x] Model fields to plain Go (decision B: 7 at beta.2), row types in
       `store/postgres/rows.go`; `lib/pq` now only in `store/postgres` and
       `internal/migrations`

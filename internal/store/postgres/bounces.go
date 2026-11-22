@@ -68,6 +68,10 @@ func (s bounces) Get(ctx context.Context, id int, scope store.ListScope) (models
 }
 
 func (s bounces) BlocklistSubscribers(ctx context.Context, f store.BounceFilter) error {
+	// Nothing selected (the SQL itself would take an empty ID list as "all").
+	if len(f.IDs) == 0 && !f.All {
+		return nil
+	}
 	_, err := s.q.BlocklistBouncedSubscribers.ExecContext(ctx, pq.Array(f.IDs), f.CampaignID, f.Source, f.Type,
 		f.Scope.All, pq.Array(f.Scope.IDs))
 	return wrap(err)

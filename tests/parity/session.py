@@ -32,7 +32,8 @@ n = 0
 # not database behaviour.
 DROP_KEYS = {"uptime", "host", "version", "build", "go_version", "memory", "num_goroutines",
              "time_taken", "loaded_at", "update", "needs_restart", "rss", "system", "allocated",
-             "heap", "sys", "num_gc", "size_mb", "cpu", "go"}
+             "heap", "sys", "num_gc", "size_mb", "cpu", "go",
+             "password"}  # API tokens are random; other passwords are masked anyway
 
 
 def scrub(v):
@@ -43,14 +44,29 @@ def scrub(v):
     return v
 
 
-def call(name, method, path, body=None, form=None, files=None, auth=True, raw=False, record=True):
-    """Make a request; record and return (status, parsed body or text)."""
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *a, **k):
+        return None
+
+
+def cookie_opener():
+    """An opener with its own cookie jar: one browser session."""
+    import http.cookiejar
+    return urllib.request.build_opener(NoRedirect, urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
+
+
+def call(name, method, path, body=None, form=None, files=None, auth=True, raw=False, record=True, opener=None):
+    """Make a request; record and return (status, parsed body or text).
+    auth: True = the admin API token, False = none, a string = that
+    Authorization header. opener: a cookie_opener() for browser sessions."""
     global n
     url = path if path.startswith("http") else BASE + path
     headers = {}
     data = None
-    if auth:
+    if auth is True:
         headers["Authorization"] = AUTH
+    elif auth:
+        headers["Authorization"] = auth
     if files is not None:
         boundary = "parityboundary0123456789"
         parts = []
@@ -70,12 +86,8 @@ def call(name, method, path, body=None, form=None, files=None, auth=True, raw=Fa
         headers["Content-Type"] = "application/json"
 
     req = urllib.request.Request(url, data=data, method=method, headers=headers)
-
-    class NoRedirect(urllib.request.HTTPRedirectHandler):
-        def redirect_request(self, *a, **k):
-            return None
-
-    opener = urllib.request.build_opener(NoRedirect)
+    if opener is None:
+        opener = urllib.request.build_opener(NoRedirect)
     try:
         with opener.open(req, timeout=30) as r:
             status, text, loc = r.status, r.read(), r.headers.get("Location", "")
@@ -395,6 +407,45 @@ call("user-demote-last-admin", "PUT", "/api/users/1",
       "password": "", "user_role_id": r_user, "status": "enabled"})
 call("users-list", "GET", "/api/users")
 call("user-delete-last-admin", "DELETE", "/api/users/1")
+# ---------------------------------------------------------------- password login, sessions
+br1, br2 = cookie_opener(), cookie_opener()
+call("login-wrong-password", "POST", "/admin/login", form={"username": "admin", "password": "wrongpass123", "next": "/admin"}, auth=False, opener=br1)
+call("login", "POST", "/admin/login", form={"username": "admin", "password": "adminpass123", "next": "/admin"}, auth=False, opener=br1)
+call("login-second-browser", "POST", "/admin/login", form={"username": "admin", "password": "adminpass123", "next": "/admin"}, auth=False, opener=br2)
+call("session-profile", "GET", "/api/profile", auth=False, opener=br1)
+call("session-lists", "GET", "/api/lists?minimal=true&per_page=all", auth=False, opener=br1)
+call("session-profile-update", "PUT", "/api/profile", {"name": "Admin A", "email": "admin@listmonk", "password": ""}, auth=False, opener=br1)
+call("session-profile-password", "PUT", "/api/profile", {"name": "Admin A", "email": "admin@listmonk", "password": "adminpass456"}, auth=False, opener=br1)
+call("session-other-browser-after-password", "GET", "/api/profile", auth=False, opener=br2)
+call("session-logout", "POST", "/api/logout", auth=False, opener=br1)
+call("session-after-logout", "GET", "/api/profile", auth=False, opener=br1)
+call("login-old-password", "POST", "/admin/login", form={"username": "admin", "password": "adminpass123", "next": "/admin"}, auth=False, opener=br2)
+call("login-new-password", "POST", "/admin/login", form={"username": "admin", "password": "adminpass456", "next": "/admin"}, auth=False, opener=br2)
+call("session-profile-2", "GET", "/api/profile", auth=False, opener=br2)
+
+# ---------------------------------------------------------------- restricted API user (list-scoped)
+r_scoped = data(call("role-scoped-create", "POST", "/api/roles/users",
+                     {"name": "Scoped", "permissions": ["subscribers:get", "campaigns:get", "bounces:get",
+                                                        "campaigns:get_analytics"]}))
+r_scoped = r_scoped["id"] if isinstance(r_scoped, dict) else 0
+ru = data(call("user-api-restricted-create", "POST", "/api/users",
+               {"username": "restricted", "type": "api", "name": "Restricted", "user_role_id": r_scoped,
+                "list_role_id": r_list, "status": "enabled"}))
+if isinstance(ru, dict):
+    call("user-api-restricted-get", "GET", f"/api/users/{ru['id']}")
+    rauth = "Basic " + base64.b64encode(f"restricted:{ru['password']}".encode()).decode()
+    for nm, path in [("lists", "/api/lists?per_page=all"), ("list-other", f"/api/lists/{l3}"), ("list-own", f"/api/lists/{l4}"),
+                     ("subscribers", "/api/subscribers?per_page=all"), ("subscriber-other", f"/api/subscribers/{s2}"),
+                     ("campaigns", "/api/campaigns"), ("campaign", f"/api/campaigns/{c1}"),
+                     ("running-stats", "/api/campaigns/running/stats"), ("bounces", "/api/bounces"),
+                     ("camp-analytics", f"/api/campaigns/analytics/views?id={c1}&{rng}"),
+                     ("sub-export", f"/api/subscribers/{s1}/export"), ("sub-activity", f"/api/subscribers/{s1}/activity"),
+                     ("dashboard", "/api/dashboard/counts"), ("users", "/api/users")]:
+        call("restricted-" + nm, "GET", path, auth=rauth)
+    call("restricted-delete-list", "DELETE", f"/api/lists/{l3}", auth=rauth)
+    call("restricted-delete-lists-query", "DELETE", "/api/lists?query=Weekly", auth=rauth)
+    call("user-api-restricted-delete", "DELETE", f"/api/users/{ru['id']}")
+
 call("role-delete", "DELETE", f"/api/roles/{r_list}")
 call("user-delete", "DELETE", f"/api/users/{u1}")
 call("users-after", "GET", "/api/users")

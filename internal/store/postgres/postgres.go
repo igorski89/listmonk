@@ -87,15 +87,36 @@ func (s *Store) Analytics() store.AnalyticsStore        { return analytics{s} }
 func (s *Store) Stats() store.StatsStore                { return stats{s} }
 func (s *Store) Schema() store.SchemaStore              { return schema{s} }
 
+// conflictFields maps unique constraints to the logical field they
+// protect. Others report the constraint name as the field. Note:
+// idx_subs_email (case-insensitive e-mail) is deliberately not "email":
+// upstream only treats subscribers_email_key as "e-mail exists".
+var conflictFields = map[string]string{
+	"subscribers_email_key":      "email",
+	"users_username_key":         "username",
+	"users_email_key":            "email",
+	"campaigns_archive_slug_key": "archive_slug",
+	"idx_roles_name":             "name",
+}
+
 // wrap turns a driver error into a store error: *pq.Error becomes
-// *store.DBError (keeping Postgres' DETAIL); others pass through.
+// *store.DBError (keeping Postgres' DETAIL), unique violations a
+// *store.ConflictError around it; others pass through.
 func wrap(err error) error {
 	if err == nil {
 		return nil
 	}
 	var pqErr *pq.Error
 	if errors.As(err, &pqErr) {
-		return &store.DBError{Err: err, Detail: pqErr.Detail}
+		dbErr := &store.DBError{Err: err, Detail: pqErr.Detail}
+		if pqErr.Code == "23505" {
+			field, ok := conflictFields[pqErr.Constraint]
+			if !ok {
+				field = pqErr.Constraint
+			}
+			return &store.ConflictError{Field: field, Err: dbErr}
+		}
+		return dbErr
 	}
 	return err
 }

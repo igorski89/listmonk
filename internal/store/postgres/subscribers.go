@@ -280,9 +280,6 @@ func (s subscribers) Insert(ctx context.Context, in store.SubscriberInput, lists
 		pq.Array(ints(lists.ListIDs)),
 		pq.Array(strs(lists.ListUUIDs)),
 		lists.Status); err != nil {
-		if e := pqErr(err); e != nil && e.Constraint == "subscribers_email_key" {
-			return models.Subscriber{}, &store.ConflictError{Field: "email", Err: err}
-		}
 		return models.Subscriber{}, wrap(err)
 	}
 

@@ -58,8 +58,8 @@ type Store interface {
 	// database. Startup: open the backend, read Settings().All(), build
 	// Options, call Configure once, then use the other stores. (Upstream
 	// does the same: initSettings, then prepareQueries interpolates by
-	// privacy.individual_tracking.) Settings() and Schema() work before
-	// Configure; the others return an error until it has been called.
+	// privacy.individual_tracking.) Only Settings().All() and Schema()
+	// may be used before Configure.
 	Configure(o Options) error
 
 	// Dialect names the backend ("postgres", "sqlite"). Used for logging
@@ -108,13 +108,22 @@ func (e *DBError) Error() string { return e.Err.Error() }
 func (e *DBError) Unwrap() error { return e.Err }
 
 // ConflictError is a unique constraint violation. Field is the logical
-// field ("email", "archive_slug", "name"), not a constraint name.
+// field ("email", "username", "archive_slug", "name"); for constraints a
+// backend has no logical name for, the constraint's name. Err is the
+// underlying *DBError.
 type ConflictError struct {
 	Field string
 	Err   error
 }
 
-func (e *ConflictError) Error() string { return fmt.Sprintf("store: %s already exists", e.Field) }
+// Error is the underlying database error's message, so messages shown to
+// admins don't change with the mapping.
+func (e *ConflictError) Error() string {
+	if e.Err != nil {
+		return e.Err.Error()
+	}
+	return fmt.Sprintf("store: %s already exists", e.Field)
+}
 func (e *ConflictError) Unwrap() error { return e.Err }
 
 // InvalidQueryError is a rejected SubscriberFilter.Expr: syntax error,

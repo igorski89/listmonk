@@ -51,9 +51,10 @@ type ArchiveSettings struct {
 	Meta       models.JSON
 }
 
-// CampaignStore is campaigns and their sending state. Every returned
-// models.Campaign has Tags non-nil and its stats (views, clicks, bounces,
-// lists) loaded.
+// CampaignStore is campaigns and their sending state. Campaigns returned
+// by Query, Get, Create and Update have Tags non-nil and their stats
+// (views, clicks, bounces, lists, media) loaded; GetForPreview, Archived
+// and Next return the row only, as upstream.
 type CampaignStore interface {
 	// Query returns one page of campaigns and the total. Sort.Field is
 	// one of name, status, created_at, updated_at, started_at, send_at.
