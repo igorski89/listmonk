@@ -109,11 +109,11 @@ func (s *Store) Close() error {
 func (s *Store) Subscribers() store.SubscriberStore     { return subscribers{s} }
 func (s *Store) Subscriptions() store.SubscriptionStore { return subscriptions{s} }
 func (s *Store) Lists() store.ListStore                 { return lists{s} }
-func (s *Store) Campaigns() store.CampaignStore         { return nyCampaigns{} }
-func (s *Store) Tracking() store.TrackingStore          { return nyTracking{} }
+func (s *Store) Campaigns() store.CampaignStore         { return campaigns{s} }
+func (s *Store) Tracking() store.TrackingStore          { return tracking{s} }
 func (s *Store) Bounces() store.BounceStore             { return nyBounces{} }
-func (s *Store) Templates() store.TemplateStore         { return nyTemplates{} }
-func (s *Store) Media() store.MediaStore                { return nyMedia{} }
+func (s *Store) Templates() store.TemplateStore         { return templates{s} }
+func (s *Store) Media() store.MediaStore                { return mediaStore{s} }
 func (s *Store) Users() store.UserStore                 { return nyUsers{} }
 func (s *Store) Roles() store.RoleStore                 { return nyRoles{} }
 func (s *Store) Sessions() store.SessionStore           { return nySessions{} }
@@ -315,7 +315,11 @@ func orderBy(s store.Sort, fields map[string]string, def string) string {
 	if !ok {
 		expr = def
 	}
-	return expr + " " + sortDir(s)
+	// Postgres puts NULLs last ascending and first descending.
+	if s.Desc {
+		return expr + " DESC NULLS FIRST"
+	}
+	return expr + " ASC NULLS LAST"
 }
 
 func replaceAll(s, old, new string) string { return strings.ReplaceAll(s, old, new) }

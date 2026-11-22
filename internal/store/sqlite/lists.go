@@ -243,4 +243,3 @@ func (s lists) Touch(ctx context.Context, ids []int) error {
 	_, err := s.w.ExecContext(ctx, `UPDATE lists SET updated_at = ?2 WHERE id IN (SELECT value FROM json_each(?1))`, ints(ids), now())
 	return wrap(err)
 }
-
