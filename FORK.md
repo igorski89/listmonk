@@ -70,6 +70,15 @@ Skipped without the DSN, so `go test ./...` passes without Docker.
       - subscriber data export: order of the subscriptions (unordered
         upstream).
 
+### SQLite at scale
+
+`LISTMONK_TEST_SCALE=100000 go test ./internal/store/sqlite/ -run TestScale -v`
+(laptop, 2026-11-23, 100k subscribers on one list):
+import 11.0 s; subscriber page, list filter, search, SQL expression,
+lists with counts, dashboard counts 46-78 ms each; counting a campaign's
+recipients 58 ms; fetching all 100k recipients in batches of 1000 4.4 s;
+1000 view registrations 120 ms.
+
 ### SQLite differences by design
 
 - Search uses substring matching (`LIKE`), no stemming (Postgres also
