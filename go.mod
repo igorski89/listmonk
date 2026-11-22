@@ -36,6 +36,7 @@ require (
 	github.com/zerodha/easyjson v1.0.1
 	github.com/zerodha/simplesessions/stores/postgres/v3 v3.0.0
 	github.com/zerodha/simplesessions/v3 v3.0.0
+	golang.org/x/crypto v0.58.0
 	golang.org/x/mod v0.42.0
 	golang.org/x/oauth2 v0.37.0
 	golang.org/x/text v0.43.0
@@ -58,7 +59,6 @@ require (
 	github.com/pelletier/go-toml v1.9.5 // indirect
 	github.com/shopspring/decimal v1.6.0 // indirect
 	github.com/spf13/cast v1.10.0 // indirect
-	golang.org/x/crypto v0.58.0 // indirect
 	golang.org/x/image v0.47.0 // indirect
 	golang.org/x/sys v0.49.0 // indirect
 	golang.org/x/time v0.16.0 // indirect

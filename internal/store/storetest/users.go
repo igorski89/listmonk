@@ -8,6 +8,7 @@ import (
 	"github.com/knadh/listmonk/internal/auth"
 	"github.com/knadh/listmonk/internal/store"
 	"github.com/knadh/listmonk/models"
+	"golang.org/x/crypto/bcrypt"
 	null "gopkg.in/volatiletech/null.v6"
 )
 
@@ -37,6 +38,11 @@ func testUsers(t *testing.T, st store.Store) {
 	eq(t, u.UserRolePerms, []string{"users:manage", "lists:get_all"}, "role permissions")
 	if u.Password.String == "adminpass123" || u.Password.String == "" {
 		t.Errorf("password stored in plain text or not at all")
+	}
+	// Every backend stores standard bcrypt, so a database moved between
+	// backends keeps working logins.
+	if err := bcrypt.CompareHashAndPassword([]byte(u.Password.String), []byte("adminpass123")); err != nil {
+		t.Errorf("password hash isn't bcrypt of the password: %v", err)
 	}
 
 	// Login: right and wrong passwords; disabled users can't.

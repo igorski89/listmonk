@@ -55,6 +55,8 @@ func Run(t *testing.T, open Opener, fx Fixtures) {
 	t.Run("Users", func(t *testing.T) { testUsers(t, open(t, def)) })
 	t.Run("Roles", func(t *testing.T) { testRoles(t, open(t, def)) })
 	t.Run("Sessions", func(t *testing.T) { testSessions(t, open(t, def)) })
+	t.Run("Sorting", func(t *testing.T) { testSorting(t, open(t, def)) })
+	t.Run("Shapes", func(t *testing.T) { testShapes(t, open(t, def)) })
 	for _, o := range []store.Options{
 		{SessionTTL: 3600e9},
 		{SessionTTL: 3600e9, IndividualTracking: true},

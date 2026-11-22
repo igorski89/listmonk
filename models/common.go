@@ -331,6 +331,10 @@ func (s JSON) Scan(b any) error {
 	if data, ok := b.([]byte); ok {
 		return json.Unmarshal(data, &s)
 	}
+	// SQLite returns JSON text as a string.
+	if data, ok := b.(string); ok {
+		return json.Unmarshal([]byte(data), &s)
+	}
 	return fmt.Errorf("could not not decode type %T -> %T", b, s)
 }
 
@@ -343,6 +347,10 @@ func (s StringIntMap) Scan(src any) error {
 
 	if data, ok := src.([]byte); ok {
 		return json.Unmarshal(data, &s)
+	}
+	// SQLite returns JSON text as a string.
+	if data, ok := src.(string); ok {
+		return json.Unmarshal([]byte(data), &s)
 	}
 	return fmt.Errorf("could not not decode type %T -> %T", src, s)
 }
