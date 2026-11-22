@@ -19,6 +19,23 @@ roles, password login and sessions (incl. password change logging out
 other sessions), a list-scoped API user, maintenance. Run it also with
 `VERSION=v7.0.0-beta.2` for the non-final-build startup path.
 
+## Status (2026-11-23 morning)
+
+Done overnight, all on branch `sqlite`, each commit green:
+store interfaces -> parity harness -> Postgres store -> app on the store
+(parity OK vs v7.0.0-beta.2) -> plain-Go models -> conformance suite
+(green on Postgres) -> SQLite store (suite green, sandboxed SQL filters)
+-> `db.driver` switch -> parity on SQLite (only expected differences).
+
+Not done / next:
+- Review of the deviations and SQLite differences below.
+- Deploy-side changes for SGNL (Kamal config, backup of the SQLite file,
+  removing the Postgres accessory) need igor's go; nothing was changed on
+  the server.
+- SQLite migrations after v7.0.0 (none yet); rebase onto the v7.0.0 tag
+  when it ships.
+- Data move Postgres -> SQLite: not built (SGNL has no data to move).
+
 ## Step 1: app on the store interfaces, Postgres only, no behaviour change
 
 Every commit builds, vets and passes `tests/parity/compare.sh`.
