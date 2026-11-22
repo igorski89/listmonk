@@ -53,7 +53,9 @@ Skipped without the DSN, so `go test ./...` passes without Docker.
       it passes "TRUE", not "", as the condition), transaction-begin
       failures, "role in use" on DeleteListPermission.
 - [x] Self-check: breaking a row mapping turns the suite red.
-- [ ] SQLite store
+- [ ] SQLite store (`internal/store/sqlite`, modernc.org/sqlite, no cgo).
+      Run: `go test ./internal/store/sqlite/ -timeout 120s`. Passing suite
+      sections so far: Schema, Settings.
 
 ### Deviations from upstream behaviour (to review)
 
