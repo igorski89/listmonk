@@ -52,6 +52,7 @@ import (
 	"github.com/knadh/listmonk/internal/notifs"
 	lmstore "github.com/knadh/listmonk/internal/store"
 	"github.com/knadh/listmonk/internal/store/postgres"
+	"github.com/knadh/listmonk/internal/store/sqlite"
 	"github.com/knadh/listmonk/internal/subimporter"
 	"github.com/knadh/listmonk/models"
 	"github.com/knadh/stuffbin"
@@ -414,19 +415,39 @@ func readQueries(dir string, fs stuffbin.FileSystem) goyesql.Queries {
 }
 
 // prepareQueries queries prepares a query map and returns a *Queries
-// initStore returns the storage layer over the connection pool and the
-// parsed queries/*.sql.
-func initStore(db *sqlx.DB, qMap goyesql.Queries) *postgres.Store {
-	migs := make([]postgres.Migration, 0, len(migList))
-	for _, m := range migList {
-		migs = append(migs, postgres.Migration{Version: m.version, Fn: m.fn})
+// initStore opens the configured database: db.driver "postgres" (the
+// default: the connection pool over the parsed queries/*.sql) or "sqlite"
+// (the file at db.path).
+func initStore(fs stuffbin.FileSystem) lmstore.Store {
+	switch driver := ko.String("db.driver"); driver {
+	case "", "postgres":
+		migs := make([]postgres.Migration, 0, len(migList))
+		for _, m := range migList {
+			migs = append(migs, postgres.Migration{Version: m.version, Fn: m.fn})
+		}
+		return postgres.New(initDB(), readQueries(queryFilePath, fs), migs, lo)
+
+	case "sqlite":
+		path := ko.String("db.path")
+		if path == "" {
+			path = "listmonk.db"
+		}
+		lo.Printf("opening db: sqlite %s", path)
+		st, err := sqlite.Open(path, lo)
+		if err != nil {
+			lo.Fatalf("error opening database: %v", err)
+		}
+		return st
+
+	default:
+		lo.Fatalf("unknown db.driver %q: use postgres or sqlite", driver)
+		return nil
 	}
-	return postgres.New(db, qMap, migs, lo)
 }
 
 // configureStore applies the settings-dependent store options and
 // prepares the queries.
-func configureStore(st *postgres.Store, ko *koanf.Koanf) {
+func configureStore(st lmstore.Store, ko *koanf.Koanf) {
 	// Same default as the auth module's.
 	ttl := ko.Duration("security.session_duration")
 	if ttl < time.Second {
@@ -443,7 +464,7 @@ func configureStore(st *postgres.Store, ko *koanf.Koanf) {
 }
 
 // initSettings loads settings from the DB into the given Koanf map.
-func initSettings(st *postgres.Store, ko *koanf.Koanf) {
+func initSettings(st lmstore.Store, ko *koanf.Koanf) {
 	s, err := st.Settings().All(context.Background())
 	if err != nil {
 		msg := err.Error()

@@ -37,9 +37,30 @@ def dump(rel, path):
         f.write(data)
 
 
+def dump_sqlite(path, out):
+    """SQLite: every table, rows in a stable order, as CSV."""
+    import csv
+    import sqlite3
+    c = sqlite3.connect(path)
+    tables = [r[0] for r in c.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY 1")]
+    for t in tables:
+        if t in SKIP:
+            continue
+        cur = c.execute(f'SELECT * FROM "{t}"')
+        cols = [d[0] for d in cur.description]
+        rows = sorted(cur.fetchall(), key=lambda r: [str(x) for x in r])
+        with open(os.path.join(out, t + ".csv"), "w", newline="") as f:
+            w = csv.writer(f)
+            w.writerow(cols)
+            w.writerows(rows)
+
+
 def main():
     out = sys.argv[1]
     os.makedirs(out, exist_ok=True)
+    if os.environ.get("PARITY_SQLITE"):
+        return dump_sqlite(os.environ["PARITY_SQLITE"], out)
     tables = psql("SELECT table_name FROM information_schema.tables "
                   "WHERE table_schema='public' AND table_type='BASE TABLE' ORDER BY 1").split()
     for t in tables:

@@ -6,6 +6,9 @@
 #   tests/parity/run.sh <binary> <source-root> <outdir>
 #   diff -r <outdir-a>/norm <outdir-b>/norm
 #
+# BACKEND=sqlite runs the build on SQLite (a fresh file in <outdir>)
+# instead of the Postgres container.
+#
 # Needs two local containers (127.0.0.1 only), started by setup.sh:
 #   lm-parity-pg   (postgres, port 55432)
 #   lm-parity-mail (mailpit, SMTP 51025, API 58025)
@@ -23,8 +26,17 @@ OUT=$(cd "$OUT" && pwd)
 
 psql() { docker exec -i "$PG" psql -U listmonk -d listmonk -v ON_ERROR_STOP=1 -qAt "$@"; }
 
+BACKEND=${BACKEND:-postgres}
+if [ "$BACKEND" = sqlite ]; then
+	export LISTMONK_db__driver=sqlite
+	export LISTMONK_db__path="$OUT/listmonk.db"
+	export PARITY_SQLITE="$OUT/listmonk.db"
+fi
+
 # Fresh database and mailbox.
-psql -c "DROP SCHEMA public CASCADE; CREATE SCHEMA public;" >/dev/null
+if [ "$BACKEND" = postgres ]; then
+	psql -c "DROP SCHEMA public CASCADE; CREATE SCHEMA public;" >/dev/null
+fi
 curl -sf -X DELETE http://127.0.0.1:58025/api/v1/messages >/dev/null
 
 # The binary runs from a source checkout without a frontend build.
@@ -38,7 +50,11 @@ LISTMONK_ADMIN_USER=admin LISTMONK_ADMIN_PASSWORD=adminpass123 LISTMONK_ADMIN_AP
 TOKEN=$(sed -n 's/.*LISTMONK_ADMIN_API_TOKEN="\(.*\)"/\1/p' "$OUT/install.err")
 
 python3 -I "$HERE/dump.py" "$OUT/db-install"
-psql <"$HERE/settings.sql" >/dev/null
+if [ "$BACKEND" = sqlite ]; then
+	python3 -I -c "import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); c.executescript(open(sys.argv[2]).read()); c.commit()" "$PARITY_SQLITE" "$HERE/settings.sql"
+else
+	psql <"$HERE/settings.sql" >/dev/null
+fi
 
 "$BIN" --config "$HERE/config.toml" >"$OUT/server.log" 2>&1 &
 PID=$!

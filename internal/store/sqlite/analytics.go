@@ -368,7 +368,7 @@ type bounceRow struct {
 func (r bounceRow) model() models.Bounce {
 	b := r.Bounce
 	b.Meta = json.RawMessage(r.Meta)
-	if r.Campaign != nil {
+	if len(r.Campaign) > 0 && string(r.Campaign) != "null" {
 		c := json.RawMessage(r.Campaign)
 		b.Campaign = &c
 	}

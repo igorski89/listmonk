@@ -25,7 +25,7 @@ import (
 	"github.com/knadh/listmonk/internal/manager"
 	"github.com/knadh/listmonk/internal/media"
 	"github.com/knadh/listmonk/internal/messenger/email"
-	"github.com/knadh/listmonk/internal/store/postgres"
+	lmstore "github.com/knadh/listmonk/internal/store"
 	"github.com/knadh/listmonk/internal/subimporter"
 	"github.com/knadh/listmonk/models"
 	"github.com/knadh/paginator/v2"
@@ -37,7 +37,7 @@ type App struct {
 	cfg        *Config
 	urlCfg     *UrlConfig
 	fs         stuffbin.FileSystem
-	st         *postgres.Store
+	st         lmstore.Store
 	core       *core.Core
 	manager    *manager.Manager
 	messengers []manager.Messenger
@@ -82,7 +82,7 @@ var (
 
 	ko = koanf.New(".")
 	fs stuffbin.FileSystem
-	st *postgres.Store
+	st lmstore.Store
 
 	// Compile-time variables.
 	buildString   string
@@ -137,13 +137,11 @@ func init() {
 	}
 
 	// Connect to the database.
-	db := initDB()
-
 	// Initialize the embedded filesystem with static assets.
 	fs = initFS(appDir, ko.String("static-dir"), ko.String("i18n-dir"))
 
-	// The storage layer, over the SQL queries from the queries files.
-	st = initStore(db, readQueries(queryFilePath, fs))
+	// The storage layer: Postgres (default) or SQLite.
+	st = initStore(fs)
 
 	isNonFinal := isNonFinalBuild(versionString)
 

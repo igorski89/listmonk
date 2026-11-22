@@ -10,7 +10,6 @@ import (
 	"github.com/knadh/listmonk/internal/auth"
 	"github.com/knadh/listmonk/internal/messenger/email"
 	lmstore "github.com/knadh/listmonk/internal/store"
-	"github.com/knadh/listmonk/internal/store/postgres"
 	"github.com/knadh/listmonk/internal/utils"
 	"github.com/knadh/listmonk/models"
 	"github.com/knadh/stuffbin"
@@ -18,7 +17,7 @@ import (
 )
 
 // install runs the first time setup of setting up the database.
-func install(lastVer string, st *postgres.Store, fs stuffbin.FileSystem, prompt, idempotent bool) {
+func install(lastVer string, st lmstore.Store, fs stuffbin.FileSystem, prompt, idempotent bool) {
 	ctx := context.Background()
 
 	fmt.Println("")

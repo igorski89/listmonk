@@ -10,7 +10,6 @@ import (
 	"github.com/knadh/koanf/v2"
 	"github.com/knadh/listmonk/internal/migrations"
 	lmstore "github.com/knadh/listmonk/internal/store"
-	"github.com/knadh/listmonk/internal/store/postgres"
 	"github.com/knadh/stuffbin"
 	"golang.org/x/mod/semver"
 )
@@ -53,7 +52,7 @@ var migList = []migFunc{
 // upgrade upgrades the database to the current version by running SQL migration files
 // for all version from the last known version to the current one.
 // If record is false, migration versions are not recorded in the DB (used for non-final builds).
-func upgrade(st *postgres.Store, fs stuffbin.FileSystem, prompt bool, record bool) {
+func upgrade(st lmstore.Store, fs stuffbin.FileSystem, prompt bool, record bool) {
 	if prompt {
 		var ok string
 		fmt.Printf("** IMPORTANT: Take a backup of the database before upgrading.\n")
@@ -75,7 +74,7 @@ func upgrade(st *postgres.Store, fs stuffbin.FileSystem, prompt bool, record boo
 
 // checkUpgrade checks if the current database schema matches the expected
 // binary version.
-func checkUpgrade(st *postgres.Store) {
+func checkUpgrade(st lmstore.Store) {
 	ctx := context.Background()
 	vers, err := st.Schema().Pending(ctx)
 	if err != nil {

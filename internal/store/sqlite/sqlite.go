@@ -50,6 +50,9 @@ func Open(path string, lo *log.Logger) (*Store, error) {
 		q.Add("_pragma", p)
 	}
 	q.Set("_time_format", "sqlite")
+	// Times come back in UTC (as from Postgres with a UTC session), not in
+	// a fixed +00:00 zone.
+	q.Set("_timezone", "UTC")
 
 	wq := url.Values{}
 	for k, v := range q {
@@ -207,7 +210,7 @@ func now() string { return ts(time.Now()) }
 func parseTS(v string) (time.Time, error) {
 	for _, l := range []string{tsLayout, "2006-01-02 15:04:05.999999999Z07:00", "2006-01-02 15:04:05", "2006-01-02"} {
 		if t, err := time.Parse(l, v); err == nil {
-			return t, nil
+			return t.UTC(), nil
 		}
 	}
 	return time.Time{}, fmt.Errorf("sqlite: unparsable time %q", v)

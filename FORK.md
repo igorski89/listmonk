@@ -56,6 +56,33 @@ Skipped without the DSN, so `go test ./...` passes without Docker.
 - [x] SQLite store (`internal/store/sqlite`, modernc.org/sqlite, no cgo):
       the whole conformance suite passes (81% coverage).
       Run: `go test ./internal/store/sqlite/ -timeout 120s`. 
+- [x] App runs on SQLite: `[db] driver = "sqlite"`, `path = "listmonk.db"`
+      (or `LISTMONK_db__driver=sqlite`); Postgres stays the default.
+- [x] Parity on SQLite: `BACKEND=sqlite tests/parity/compare.sh` runs the
+      same session on SQLite against the Postgres baseline (API + mail).
+      Remaining differences, all expected:
+      - error message wording (rejected SQL expressions, unique violations:
+        the database's own text);
+      - IDs: Postgres sequences skip numbers when an insert conflicts
+        (upserts, duplicate names); SQLite doesn't, so later IDs differ;
+      - CSV export: `attribs` JSON spacing and key order (Postgres prints
+        jsonb's canonical form);
+      - subscriber data export: order of the subscriptions (unordered
+        upstream).
+
+### SQLite differences by design
+
+- Search uses substring matching (`LIKE`), no stemming (Postgres also
+  uses full-text search for list, campaign, template and role names).
+- Case-insensitive search and e-mail uniqueness fold ASCII only.
+- Stats (dashboard, list counts and charts) are always live; there are no
+  materialized views and `app.cache_slow_queries` has no effect.
+- Raw SQL subscriber filters are SQLite SQL, sandboxed by the authorizer
+  (allowed tables and functions only); expressions containing `;` outside
+  quotes are rejected.
+- Migrations: SQLite starts from a baseline at upstream v7.0.0; each later
+  upstream migration needs an SQLite twin in `internal/store/sqlite`.
+
 ### Deviations from upstream behaviour (to review)
 
 None show in the parity session. Known differences on paths it doesn't
