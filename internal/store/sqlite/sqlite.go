@@ -111,31 +111,16 @@ func (s *Store) Subscriptions() store.SubscriptionStore { return subscriptions{s
 func (s *Store) Lists() store.ListStore                 { return lists{s} }
 func (s *Store) Campaigns() store.CampaignStore         { return campaigns{s} }
 func (s *Store) Tracking() store.TrackingStore          { return tracking{s} }
-func (s *Store) Bounces() store.BounceStore             { return nyBounces{} }
+func (s *Store) Bounces() store.BounceStore             { return bounces{s} }
 func (s *Store) Templates() store.TemplateStore         { return templates{s} }
 func (s *Store) Media() store.MediaStore                { return mediaStore{s} }
-func (s *Store) Users() store.UserStore                 { return nyUsers{} }
-func (s *Store) Roles() store.RoleStore                 { return nyRoles{} }
-func (s *Store) Sessions() store.SessionStore           { return nySessions{} }
-func (s *Store) Analytics() store.AnalyticsStore        { return nyAnalytics{} }
-func (s *Store) Stats() store.StatsStore                { return nyStats{} }
+func (s *Store) Users() store.UserStore                 { return users{s} }
+func (s *Store) Roles() store.RoleStore                 { return roles{s} }
+func (s *Store) Sessions() store.SessionStore           { return sessions{s} }
+func (s *Store) Analytics() store.AnalyticsStore        { return analytics{s} }
+func (s *Store) Stats() store.StatsStore                { return stats{s} }
 func (s *Store) Settings() store.SettingsStore          { return settings{s} }
 func (s *Store) Schema() store.SchemaStore              { return schema{s} }
-
-// Stand-ins for stores not written yet: calling one panics.
-type nySubscribers struct{ store.SubscriberStore }
-type nySubscriptions struct{ store.SubscriptionStore }
-type nyLists struct{ store.ListStore }
-type nyCampaigns struct{ store.CampaignStore }
-type nyTracking struct{ store.TrackingStore }
-type nyBounces struct{ store.BounceStore }
-type nyTemplates struct{ store.TemplateStore }
-type nyMedia struct{ store.MediaStore }
-type nyUsers struct{ store.UserStore }
-type nyRoles struct{ store.RoleStore }
-type nySessions struct{ store.SessionStore }
-type nyAnalytics struct{ store.AnalyticsStore }
-type nyStats struct{ store.StatsStore }
 
 // Errors.
 
@@ -186,9 +171,14 @@ func wrap(err error) error {
 func asConflict(err error, ce **store.ConflictError) bool { return errors.As(err, ce) }
 
 // isFKErr reports whether err is a foreign key violation.
+// (ON DELETE RESTRICT reports SQLITE_CONSTRAINT_TRIGGER.)
 func isFKErr(err error) bool {
 	var se *msqlite.Error
-	return errors.As(err, &se) && se.Code() == sqlite3.SQLITE_CONSTRAINT_FOREIGNKEY
+	if !errors.As(err, &se) {
+		return false
+	}
+	return se.Code() == sqlite3.SQLITE_CONSTRAINT_FOREIGNKEY ||
+		(se.Code() == sqlite3.SQLITE_CONSTRAINT_TRIGGER && strings.Contains(se.Error(), "FOREIGN KEY"))
 }
 
 // notFound maps sql.ErrNoRows to store.ErrNotFound.
