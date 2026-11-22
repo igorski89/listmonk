@@ -53,7 +53,7 @@ func strs(v []string) []string {
 }
 
 func (s subscribers) loadLists(out models.Subscribers) error {
-	return wrap(out.LoadLists(s.q.GetSubscriberListsLazy))
+	return wrap(loadSubscriberLists(out, s.q.GetSubscriberListsLazy))
 }
 
 func (s subscribers) Get(ctx context.Context, ref store.SubscriberRef) (models.Subscriber, error) {
@@ -219,11 +219,11 @@ func (s subscribers) HasLists(ctx context.Context, subIDs, listIDs []int) (map[i
 }
 
 func (s subscribers) Lists(ctx context.Context, ref store.SubscriberRef, listIDs []int, listUUIDs []string, subStatus, listType string) ([]models.List, error) {
-	out := []models.List{}
-	if err := s.q.GetSubscriberLists.SelectContext(ctx, &out, ref.ID, uuidArg(ref.UUID), pq.Array(ints(listIDs)), pq.Array(strs(listUUIDs)), subStatus, listType); err != nil {
+	rows := []listRow{}
+	if err := s.q.GetSubscriberLists.SelectContext(ctx, &rows, ref.ID, uuidArg(ref.UUID), pq.Array(ints(listIDs)), pq.Array(strs(listUUIDs)), subStatus, listType); err != nil {
 		return nil, wrap(err)
 	}
-	return out, nil
+	return listModels(rows), nil
 }
 
 func (s subscribers) Profile(ctx context.Context, ref store.SubscriberRef, scope store.ListScope) (models.SubscriberExportProfile, error) {
@@ -538,9 +538,16 @@ func dbErrMsg(err error) string {
 // Subscriptions.
 
 func (s subscriptions) List(ctx context.Context, ref store.SubscriberRef, allLists bool) ([]models.Subscription, error) {
-	var out []models.Subscription
-	if err := s.q.GetSubscriptions.SelectContext(ctx, &out, ref.ID, ref.UUID, allLists); err != nil {
+	var rows []subscriptionRow
+	if err := s.q.GetSubscriptions.SelectContext(ctx, &rows, ref.ID, ref.UUID, allLists); err != nil {
 		return nil, wrap(err)
+	}
+	if rows == nil {
+		return nil, nil
+	}
+	out := make([]models.Subscription, len(rows))
+	for i, r := range rows {
+		out[i] = r.model()
 	}
 	return out, nil
 }

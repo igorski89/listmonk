@@ -18,7 +18,6 @@ import (
 	"github.com/knadh/listmonk/internal/notifs"
 	"github.com/knadh/listmonk/models"
 	"github.com/labstack/echo/v5"
-	"github.com/lib/pq"
 	"gopkg.in/volatiletech/null.v6"
 )
 
@@ -36,7 +35,7 @@ type campReq struct {
 	MediaIDs []int `json:"media"`
 
 	// This is only relevant to campaign test requests.
-	SubscriberEmails pq.StringArray `json:"subscribers"`
+	SubscriberEmails []string `json:"subscribers"`
 }
 
 // campContentReq wraps params coming from API requests for converting

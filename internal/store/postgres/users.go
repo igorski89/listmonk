@@ -18,20 +18,24 @@ type users struct{ *Store }
 type roles struct{ *Store }
 
 func (s users) Query(ctx context.Context, f store.UserFilter, srt store.Sort) ([]auth.User, error) {
-	out := []auth.User{}
+	rows := []userRow{}
 	stmt := replaceOrder(s.q.GetUsers, srt)
-	if err := s.db.SelectContext(ctx, &out, stmt, f.Type, f.Status, f.UserRoleID, f.ListRoleID); err != nil {
+	if err := s.db.SelectContext(ctx, &rows, stmt, f.Type, f.Status, f.UserRoleID, f.ListRoleID); err != nil {
 		return nil, wrap(err)
+	}
+	out := make([]auth.User, len(rows))
+	for i, r := range rows {
+		out[i] = r.model()
 	}
 	return out, nil
 }
 
 func (s users) Get(ctx context.Context, ref store.UserRef) (auth.User, error) {
-	var out auth.User
-	if err := s.q.GetUser.GetContext(ctx, &out, ref.ID, ref.Username, ref.Email); err != nil {
-		return out, notFound(err)
+	var row userRow
+	if err := s.q.GetUser.GetContext(ctx, &row, ref.ID, ref.Username, ref.Email); err != nil {
+		return auth.User{}, notFound(err)
 	}
-	return out, nil
+	return row.model(), nil
 }
 
 func (s users) Create(ctx context.Context, u auth.User) (int, error) {
@@ -76,11 +80,11 @@ func (s users) UpdateProfile(ctx context.Context, id int, u auth.User) error {
 }
 
 func (s users) Login(ctx context.Context, username, password string) (auth.User, error) {
-	var out auth.User
-	if err := s.q.LoginUser.GetContext(ctx, &out, username, password); err != nil {
-		return out, notFound(err)
+	var row userRow
+	if err := s.q.LoginUser.GetContext(ctx, &row, username, password); err != nil {
+		return auth.User{}, notFound(err)
 	}
-	return out, nil
+	return row.model(), nil
 }
 
 func (s users) RecordLogin(ctx context.Context, id int, avatar string) error {
@@ -113,24 +117,28 @@ func (s users) DeleteSessions(ctx context.Context, userID int, exceptID string) 
 // Roles.
 
 func (s roles) UserRoles(ctx context.Context, search string, srt store.Sort) ([]auth.Role, error) {
-	out := []auth.Role{}
+	rows := []roleRow{}
 	stmt := replaceOrder(s.q.GetUserRoles, srt)
-	if err := s.db.SelectContext(ctx, &out, stmt, 0, search); err != nil {
+	if err := s.db.SelectContext(ctx, &rows, stmt, 0, search); err != nil {
 		return nil, wrap(err)
+	}
+	out := make([]auth.Role, len(rows))
+	for i, r := range rows {
+		out[i] = r.model()
 	}
 	return out, nil
 }
 
 func (s roles) UserRole(ctx context.Context, id int) (auth.Role, error) {
-	out := []auth.Role{}
+	rows := []roleRow{}
 	stmt := replaceOrder(s.q.GetUserRoles, store.Sort{Field: models.FieldCreatedAt})
-	if err := s.db.SelectContext(ctx, &out, stmt, id, ""); err != nil {
+	if err := s.db.SelectContext(ctx, &rows, stmt, id, ""); err != nil {
 		return auth.Role{}, wrap(err)
 	}
-	if len(out) == 0 {
+	if len(rows) == 0 {
 		return auth.Role{}, store.ErrNotFound
 	}
-	return out[0], nil
+	return rows[0].model(), nil
 }
 
 func (s roles) ListRoles(ctx context.Context, search string, srt store.Sort) ([]auth.ListRole, error) {
@@ -153,11 +161,11 @@ func (s roles) ListRoles(ctx context.Context, search string, srt store.Sort) ([]
 }
 
 func (s roles) CreateUserRole(ctx context.Context, r auth.Role) (auth.Role, error) {
-	var out auth.Role
-	if err := s.q.CreateRole.GetContext(ctx, &out, r.Name, auth.RoleTypeUser, pq.Array(r.Permissions)); err != nil {
-		return out, wrap(err)
+	var row roleRow
+	if err := s.q.CreateRole.GetContext(ctx, &row, r.Name, auth.RoleTypeUser, pq.Array(r.Permissions)); err != nil {
+		return auth.Role{}, wrap(err)
 	}
-	return out, nil
+	return row.model(), nil
 }
 
 func (s roles) CreateListRole(ctx context.Context, r auth.ListRole) (auth.ListRole, error) {
@@ -172,14 +180,14 @@ func (s roles) CreateListRole(ctx context.Context, r auth.ListRole) (auth.ListRo
 }
 
 func (s roles) UpdateUserRole(ctx context.Context, id int, r auth.Role) (auth.Role, error) {
-	var out auth.Role
-	if err := s.q.UpdateRole.GetContext(ctx, &out, id, r.Name, pq.Array(r.Permissions)); err != nil {
-		return out, notFound(err)
+	var row roleRow
+	if err := s.q.UpdateRole.GetContext(ctx, &row, id, r.Name, pq.Array(r.Permissions)); err != nil {
+		return auth.Role{}, notFound(err)
 	}
-	if out.ID == 0 {
-		return out, store.ErrNotFound
+	if row.ID == 0 {
+		return auth.Role{}, store.ErrNotFound
 	}
-	return out, nil
+	return row.model(), nil
 }
 
 func (s roles) UpdateListRole(ctx context.Context, id int, r auth.ListRole) (auth.ListRole, error) {

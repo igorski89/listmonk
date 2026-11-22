@@ -20,7 +20,6 @@ import (
 	"github.com/knadh/listmonk/internal/notifs"
 	"github.com/knadh/listmonk/models"
 	"github.com/labstack/echo/v5"
-	"github.com/lib/pq"
 )
 
 const (
@@ -848,7 +847,7 @@ func (a *App) processSubForm(c *echo.Context) (bool, error) {
 		return false, echo.NewHTTPError(http.StatusBadRequest, a.i18n.T("globals.messages.invalidName"))
 	}
 
-	listUUIDs := pq.StringArray(req.FormListUUIDs)
+	listUUIDs := req.FormListUUIDs
 
 	// Fetch the list types and ensure that they are not private.
 	listTypes, err := a.core.GetListTypes(nil, req.FormListUUIDs)

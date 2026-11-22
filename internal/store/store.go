@@ -15,10 +15,11 @@
 //   - Every method takes a context.Context first.
 //
 // Models are plain Go (decision 2026-11-22, option B): no pq array types
-// and no driver-specific Scan methods in the types stores return. That
-// is 8 fields today: models.Campaign (Tags, MediaIDs, ListUUIDs),
+// and no driver-specific Scan methods in the types stores return. At
+// v7.0.0-beta.2 that meant 7 fields: models.Campaign (Tags, MediaIDs),
 // models.List (Tags), auth.User (UserRolePerms), auth.ListPermission and
-// auth.Role (Permissions), media.Media (Tags). Each backend
+// auth.Role (Permissions), media.Media (Tags). Upstream master adds
+// Campaign.ListUUIDs, to be handled the same way on rebase. Each backend
 // reads rows into its own row types, which embed the model and override
 // only the columns it encodes differently (Postgres arrays, SQLite JSON
 // text), then copies those into the model.

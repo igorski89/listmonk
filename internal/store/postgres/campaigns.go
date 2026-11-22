@@ -27,7 +27,7 @@ func (s campaigns) loadStats(out models.Campaigns) error {
 			out[i].Tags = []string{}
 		}
 	}
-	return wrap(out.LoadStats(s.q.GetCampaignStats))
+	return wrap(loadCampaignStats(out, s.q.GetCampaignStats))
 }
 
 func (s campaigns) Query(ctx context.Context, f store.CampaignFilter, srt store.Sort, p store.Page) (models.Campaigns, int, error) {
@@ -35,11 +35,12 @@ func (s campaigns) Query(ctx context.Context, f store.CampaignFilter, srt store.
 	all, permitted := scopeArgs(f.Scope)
 
 	// Unsafe to ignore scanning fields not present in models.Campaigns.
-	var out models.Campaigns
-	if err := s.db.SelectContext(ctx, &out, stmt, 0, pq.StringArray(strs(f.Statuses)), pq.StringArray(strs(f.Tags)),
+	var rows []campaignRow
+	if err := s.db.SelectContext(ctx, &rows, stmt, 0, pq.StringArray(strs(f.Statuses)), pq.StringArray(strs(f.Tags)),
 		f.Search, f.Type, all, permitted, p.Offset, p.Limit); err != nil {
 		return nil, 0, wrap(err)
 	}
+	out := campaignModels(rows)
 	if err := s.loadStats(out); err != nil {
 		return nil, 0, err
 	}
@@ -52,10 +53,11 @@ func (s campaigns) Query(ctx context.Context, f store.CampaignFilter, srt store.
 }
 
 func (s campaigns) Get(ctx context.Context, ref store.CampaignRef, tpl store.TemplateKind) (models.Campaign, error) {
-	var out models.Campaigns
-	if err := s.q.GetCampaign.SelectContext(ctx, &out, ref.ID, uuidArg(ref.UUID), ref.ArchiveSlug, string(tpl)); err != nil {
+	var rows []campaignRow
+	if err := s.q.GetCampaign.SelectContext(ctx, &rows, ref.ID, uuidArg(ref.UUID), ref.ArchiveSlug, string(tpl)); err != nil {
 		return models.Campaign{}, wrap(err)
 	}
+	out := campaignModels(rows)
 	if len(out) == 0 {
 		return models.Campaign{}, store.ErrNotFound
 	}
@@ -66,18 +68,19 @@ func (s campaigns) Get(ctx context.Context, ref store.CampaignRef, tpl store.Tem
 }
 
 func (s campaigns) GetForPreview(ctx context.Context, id, tplID int) (models.Campaign, error) {
-	var out models.Campaign
-	if err := s.q.GetCampaignForPreview.GetContext(ctx, &out, id, tplID); err != nil {
+	var row campaignRow
+	if err := s.q.GetCampaignForPreview.GetContext(ctx, &row, id, tplID); err != nil {
 		return models.Campaign{}, notFound(err)
 	}
-	return out, nil
+	return row.model(), nil
 }
 
 func (s campaigns) Archived(ctx context.Context, listUUID string, p store.Page) (models.Campaigns, int, error) {
-	var out models.Campaigns
-	if err := s.q.GetArchivedCampaigns.SelectContext(ctx, &out, p.Offset, p.Limit, string(store.TemplateArchive), listUUID); err != nil {
+	var rows []campaignRow
+	if err := s.q.GetArchivedCampaigns.SelectContext(ctx, &rows, p.Offset, p.Limit, string(store.TemplateArchive), listUUID); err != nil {
 		return models.Campaigns{}, 0, wrap(err)
 	}
+	out := campaignModels(rows)
 	total := 0
 	if len(out) > 0 {
 		total = out[0].Total
@@ -222,9 +225,16 @@ func (s campaigns) Next(ctx context.Context, inProgress []store.CampaignProgress
 		lasts = append(lasts, int64(p.LastSubID))
 	}
 
+	var rows []campaignRow
+	if err := s.q.NextCampaigns.SelectContext(ctx, &rows, pq.Int64Array(ids), pq.Int64Array(sent), pq.Int64Array(lasts)); err != nil {
+		return nil, wrap(err)
+	}
 	var out []*models.Campaign
-	err := s.q.NextCampaigns.SelectContext(ctx, &out, pq.Int64Array(ids), pq.Int64Array(sent), pq.Int64Array(lasts))
-	return out, wrap(err)
+	for _, r := range rows {
+		c := r.model()
+		out = append(out, &c)
+	}
+	return out, nil
 }
 
 type runningCamp struct {

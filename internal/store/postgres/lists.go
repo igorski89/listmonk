@@ -26,15 +26,16 @@ func fixListTags(out []models.List) {
 }
 
 func (s lists) Get(ctx context.Context, ref store.ListRef, scope store.ListScope) (models.List, error) {
-	var res []models.List
+	var rows []listRow
 	stmt := replaceOrder(s.q.QueryLists, store.Sort{Field: models.FieldCreatedAt, Desc: true})
 	var permitted any
 	if !scope.All {
 		permitted = pq.Array(scope.IDs)
 	}
-	if err := s.db.SelectContext(ctx, &res, stmt, ref.ID, uuidArg(ref.UUID), "", "", "", "", pq.StringArray{}, scope.All, permitted, 0, 1); err != nil {
+	if err := s.db.SelectContext(ctx, &rows, stmt, ref.ID, uuidArg(ref.UUID), "", "", "", "", pq.StringArray{}, scope.All, permitted, 0, 1); err != nil {
 		return models.List{}, wrap(err)
 	}
+	res := listModels(rows)
 	if len(res) == 0 {
 		return models.List{}, store.ErrNotFound
 	}
@@ -43,10 +44,11 @@ func (s lists) Get(ctx context.Context, ref store.ListRef, scope store.ListScope
 }
 
 func (s lists) All(ctx context.Context, typ, status string, scope store.ListScope) ([]models.List, error) {
-	out := []models.List{}
-	if err := s.q.GetLists.SelectContext(ctx, &out, typ, status, "id", scope.All, pq.Array(scope.IDs)); err != nil {
+	rows := []listRow{}
+	if err := s.q.GetLists.SelectContext(ctx, &rows, typ, status, "id", scope.All, pq.Array(scope.IDs)); err != nil {
 		return nil, wrap(err)
 	}
+	out := listModels(rows)
 	for i, l := range out {
 		if l.Tags == nil {
 			out[i].Tags = []string{}
@@ -62,12 +64,13 @@ func (s lists) All(ctx context.Context, typ, status string, scope store.ListScop
 func (s lists) Query(ctx context.Context, f store.ListFilter, srt store.Sort, p store.Page) ([]models.List, int, error) {
 	_ = s.refreshCache(ctx, store.StatsListSubscribers)
 
-	out := []models.List{}
+	rows := []listRow{}
 	stmt := replaceOrder(s.q.QueryLists, srt)
-	if err := s.db.SelectContext(ctx, &out, stmt, 0, "", f.Search, f.Type, f.Optin, f.Status, pq.StringArray(strs(f.Tags)),
+	if err := s.db.SelectContext(ctx, &rows, stmt, 0, "", f.Search, f.Type, f.Optin, f.Status, pq.StringArray(strs(f.Tags)),
 		f.Scope.All, pq.Array(f.Scope.IDs), p.Offset, p.Limit); err != nil {
 		return nil, 0, wrap(err)
 	}
+	out := listModels(rows)
 
 	total := 0
 	if len(out) > 0 {
@@ -78,11 +81,11 @@ func (s lists) Query(ctx context.Context, f store.ListFilter, srt store.Sort, p 
 }
 
 func (s lists) ByOptin(ctx context.Context, ids []int, optin string) ([]models.List, error) {
-	out := []models.List{}
-	if err := s.q.GetListsByOptin.SelectContext(ctx, &out, optin, pq.Array(ids), nil); err != nil {
+	rows := []listRow{}
+	if err := s.q.GetListsByOptin.SelectContext(ctx, &rows, optin, pq.Array(ids), nil); err != nil {
 		return nil, wrap(err)
 	}
-	return out, nil
+	return listModels(rows), nil
 }
 
 func (s lists) Types(ctx context.Context, ids []int, uuids []string) (map[any]string, error) {

@@ -21,7 +21,9 @@ Every commit builds, vets and passes `tests/parity/compare.sh`.
 - [x] `store/postgres`: implementation wrapping upstream `queries/*.sql`
 - [x] core + cmd + importer + bounce + auth + manager on the store (parity OK)
 - [x] `models.Queries` used only inside `store/postgres`
-- [ ] 8 model fields to plain Go (decision B), row types in the store
+- [x] Model fields to plain Go (decision B: 7 at beta.2), row types in
+      `store/postgres/rows.go`; `lib/pq` now only in `store/postgres` and
+      `internal/migrations`
 
 ### Deviations from upstream behaviour (to review)
 

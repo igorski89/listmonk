@@ -81,12 +81,16 @@ func (s templates) Delete(ctx context.Context, id int) error {
 // Media.
 
 func (s mediaStore) Query(ctx context.Context, provider, search string, tags []string, p store.Page) ([]media.Media, int, error) {
-	out := []media.Media{}
+	rows := []mediaRow{}
 	if search != "" {
 		search = strings.ToLower(search)
 	}
-	if err := s.q.QueryMedia.SelectContext(ctx, &out, fmt.Sprintf("%%%s%%", search), provider, p.Offset, p.Limit, pq.StringArray(strs(tags))); err != nil {
-		return out, 0, wrap(err)
+	if err := s.q.QueryMedia.SelectContext(ctx, &rows, fmt.Sprintf("%%%s%%", search), provider, p.Offset, p.Limit, pq.StringArray(strs(tags))); err != nil {
+		return []media.Media{}, 0, wrap(err)
+	}
+	out := make([]media.Media, len(rows))
+	for i, r := range rows {
+		out[i] = r.model()
 	}
 	total := 0
 	if len(out) > 0 {
@@ -96,11 +100,11 @@ func (s mediaStore) Query(ctx context.Context, provider, search string, tags []s
 }
 
 func (s mediaStore) Get(ctx context.Context, ref store.MediaRef) (media.Media, error) {
-	var out media.Media
-	if err := s.q.GetMedia.GetContext(ctx, &out, ref.ID, uuidArg(ref.UUID), ref.Filename); err != nil {
-		return out, notFound(err)
+	var row mediaRow
+	if err := s.q.GetMedia.GetContext(ctx, &row, ref.ID, uuidArg(ref.UUID), ref.Filename); err != nil {
+		return media.Media{}, notFound(err)
 	}
-	return out, nil
+	return row.model(), nil
 }
 
 func (s mediaStore) Tags(ctx context.Context, provider string) ([]media.Tag, error) {

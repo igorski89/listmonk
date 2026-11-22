@@ -6,7 +6,6 @@ import (
 	"slices"
 
 	"github.com/labstack/echo/v5"
-	"github.com/lib/pq"
 	null "gopkg.in/volatiletech/null.v6"
 )
 
@@ -104,7 +103,7 @@ type User struct {
 	UserRoleName  string           `db:"user_role_name" json:"-"`
 	ListRoleID    *int             `db:"list_role_id" json:"list_role_id,omitempty"`
 	ListRoleName  null.String      `db:"list_role_name" json:"-"`
-	UserRolePerms pq.StringArray   `db:"user_role_permissions" json:"-"`
+	UserRolePerms []string         `db:"user_role_permissions" json:"-"`
 	ListsPermsRaw *json.RawMessage `db:"list_role_perms" json:"-"`
 
 	// Non-DB fields filled post-retrieval.
@@ -123,9 +122,9 @@ type User struct {
 }
 
 type ListPermission struct {
-	ID          int            `json:"id"`
-	Name        string         `json:"name"`
-	Permissions pq.StringArray `json:"permissions"`
+	ID          int      `json:"id"`
+	Name        string   `json:"name"`
+	Permissions []string `json:"permissions"`
 }
 
 type ListRolePermissions struct {
@@ -137,9 +136,9 @@ type ListRolePermissions struct {
 type Role struct {
 	Base
 
-	Type        string         `db:"type" json:"type"`
-	Name        null.String    `db:"name" json:"name"`
-	Permissions pq.StringArray `db:"permissions" json:"permissions"`
+	Type        string      `db:"type" json:"type"`
+	Name        null.String `db:"name" json:"name"`
+	Permissions []string    `db:"permissions" json:"permissions"`
 
 	ListID   null.Int         `db:"list_id" json:"-"`
 	ParentID null.Int         `db:"parent_id" json:"-"`
