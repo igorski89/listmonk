@@ -3,7 +3,6 @@ package store
 import (
 	"context"
 	"encoding/json"
-	"time"
 
 	"github.com/knadh/listmonk/models"
 )
@@ -18,14 +17,14 @@ const (
 
 // AnalyticsQuery is a time series request. Core validates Metric and
 // Interval against models.AnalyticsType* / models.AnalyticsInterval*.
-// From/To are inclusive. The HTTP handler already parses them into
-// time.Time and upstream formats them back to RFC 3339 for Postgres, so
-// passing time.Time here changes no behaviour.
+// From/To are inclusive dates or timestamps as the client sent them
+// (ISO 8601: "2026-01-02" or RFC 3339); core checks their length and
+// each backend parses them (Postgres casts them, as upstream does).
 type AnalyticsQuery struct {
 	Subject  AnalyticsSubject
 	IDs      []int
 	Metric   string // views, clicks, total_views, total_clicks, bounces; lists also subscriptions, unsubscriptions
-	From, To time.Time
+	From, To string
 	Interval string // hour, day, week, month
 }
 
@@ -41,14 +40,14 @@ type AnalyticsStore interface {
 	Counts(ctx context.Context, q AnalyticsQuery) ([]models.CampaignAnalyticsCount, error)
 
 	// Links returns click counts per link for the campaigns or lists.
-	Links(ctx context.Context, subject AnalyticsSubject, ids []int, from, to time.Time) ([]models.CampaignAnalyticsLink, error)
+	Links(ctx context.Context, subject AnalyticsSubject, ids []int, from, to string) ([]models.CampaignAnalyticsLink, error)
 
 	// Activity returns per-subscriber views and clicks on campaigns.
-	Activity(ctx context.Context, campIDs []int, from, to time.Time, scope ListScope, p Page) ([]models.CampaignActivity, error)
+	Activity(ctx context.Context, campIDs []int, from, to string, scope ListScope, p Page) ([]models.CampaignActivity, error)
 
 	// ActivityEvents returns one subscriber's individual view and click
 	// events on campaigns.
-	ActivityEvents(ctx context.Context, campIDs []int, from, to time.Time, subID int, p Page) ([]models.CampaignActivityEvent, error)
+	ActivityEvents(ctx context.Context, campIDs []int, from, to string, subID int, p Page) ([]models.CampaignActivityEvent, error)
 }
 
 // StatsAggregate names a cached aggregate (a materialized view on

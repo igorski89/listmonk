@@ -91,6 +91,21 @@ var (
 	ErrNotFound = errors.New("store: not found")
 )
 
+// ErrInUse: the row can't be deleted because others still reference it
+// (e.g. a role assigned to users).
+var ErrInUse = errors.New("store: in use")
+
+// DBError is a database error the store doesn't map to one of the errors
+// above. Error() is the driver's message; Detail is the driver's extra
+// detail, if any (Postgres' DETAIL), for messages shown to admins.
+type DBError struct {
+	Err    error
+	Detail string
+}
+
+func (e *DBError) Error() string { return e.Err.Error() }
+func (e *DBError) Unwrap() error { return e.Err }
+
 // ConflictError is a unique constraint violation. Field is the logical
 // field ("email", "archive_slug", "name"), not a constraint name.
 type ConflictError struct {

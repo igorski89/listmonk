@@ -19,7 +19,7 @@ type MigrationEnv struct {
 
 // DBInfo is shown on the admin "About" page.
 type DBInfo struct {
-	Dialect string  `json:"dialect"`
+	Dialect string  `json:"-"`
 	Version string  `json:"version"`
 	SizeMB  float64 `json:"size_mb"`
 }
@@ -33,27 +33,29 @@ type SchemaStore interface {
 	// Installed reports whether the schema exists.
 	Installed(ctx context.Context) (bool, error)
 
-	// Install (re)creates the schema and default settings and records
-	// version as the schema version. It DROPS existing listmonk tables
+	// Install (re)creates the schema and default settings (Postgres:
+	// /schema.sql from env.FS) and records version as the schema version. It DROPS existing listmonk tables
 	// first (upstream schema.sql does), so callers confirm with the user,
 	// as cmd/install.go does today. The first user role (Super Admin)
 	// gets ID 1. It does not add sample data: cmd/install.go
 	// creates the sample lists, subscribers, templates and campaign
 	// through the other stores, once, for every backend.
-	Install(ctx context.Context, version string) error
+	Install(ctx context.Context, version string, env MigrationEnv) error
 
-	// Version returns the recorded schema version.
+	// Version returns the last recorded schema version ("v0.0.0" if none).
 	Version(ctx context.Context) (string, error)
 
-	// Pending returns the migration versions newer than the recorded one,
-	// up to appVersion, in order.
-	Pending(ctx context.Context, appVersion string) ([]string, error)
+	// Pending returns the versions of the known migrations newer than the
+	// recorded one, in order.
+	Pending(ctx context.Context) ([]string, error)
 
-	// Migrate runs the pending migrations up to appVersion in order,
-	// recording the version after each. Not transactional: upstream
-	// migrations take the DB handle and are written to be re-runnable
-	// (IF NOT EXISTS etc.), and SQLite's will follow the same rule.
-	Migrate(ctx context.Context, appVersion string, env MigrationEnv) error
+	// Migrate runs the pending migrations in order. With record, the
+	// version is recorded after each (non-final builds don't record, so
+	// their migrations re-run on every start, as upstream). Not
+	// transactional: upstream migrations take the DB handle and are
+	// written to be re-runnable (IF NOT EXISTS etc.), and SQLite's will
+	// follow the same rule.
+	Migrate(ctx context.Context, env MigrationEnv, record bool) error
 
 	// Optimize is the periodic maintenance job (Postgres VACUUM ANALYZE;
 	// SQLite PRAGMA optimize, incremental vacuum).

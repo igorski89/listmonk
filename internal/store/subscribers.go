@@ -139,9 +139,10 @@ type SubscriberStore interface {
 	// created_at, updated_at; empty = id.
 	Query(ctx context.Context, f SubscriberFilter, s Sort, p Page) (models.Subscribers, int, error)
 
-	// Export returns up to limit subscribers matching f with id > afterID,
-	// in id order (keyset pagination for streaming large exports).
-	Export(ctx context.Context, f SubscriberFilter, afterID, limit int) ([]models.SubscriberExport, error)
+	// Export validates f once and returns a batch reader: each call
+	// returns up to limit matching subscribers with id > afterID, in id
+	// order (keyset pagination for streaming large exports).
+	Export(ctx context.Context, f SubscriberFilter) (func(afterID, limit int) ([]models.SubscriberExport, error), error)
 
 	// HasLists reports, per subscriber ID, whether it is on any of listIDs.
 	HasLists(ctx context.Context, subIDs, listIDs []int) (map[int]bool, error)
