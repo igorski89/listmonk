@@ -16,7 +16,10 @@ The parity session covers: lists, subscribers (incl. SQL filters,
 forbidden-table and write attempts), import, templates, media, campaigns
 (incl. a real send to mailpit), tracking, public pages, bounces, users,
 roles, password login and sessions (incl. password change logging out
-other sessions), a list-scoped API user, maintenance. Run it also with
+other sessions), a list-scoped API user, maintenance, and 23 server-rendered
+admin pages (dashboard, lists, campaigns incl. analytics and activity,
+templates, subscribers incl. SQL query, bounces, import, media, users,
+roles, profile, settings). Not covered: OIDC login. Run it also with
 `VERSION=v7.0.0-beta.2` for the non-final-build startup path.
 
 ## Status (2026-11-23 morning)
@@ -85,7 +88,11 @@ Skipped without the DSN, so `go test ./...` passes without Docker.
       - CSV export: `attribs` JSON spacing and key order (Postgres prints
         jsonb's canonical form);
       - subscriber data export: order of the subscriptions (unordered
-        upstream).
+        upstream);
+      - admin pages: the same ID gaps; plus run-to-run noise in both
+        backends (clock minutes shown on campaign/list pages, and the
+        order of two hidden inputs on the templates page, which comes
+        from Go map iteration).
 
 ### SQLite at scale
 
@@ -106,6 +113,9 @@ recipients 58 ms; fetching all 100k recipients in batches of 1000 4.4 s;
 - Raw SQL subscriber filters are SQLite SQL, sandboxed by the authorizer
   (allowed tables and functions only); expressions containing `;` outside
   quotes are rejected.
+- Backups: with WAL, copying the `.db` file alone isn't a safe backup.
+  Use `sqlite3 listmonk.db "VACUUM INTO 'backup.db'"` (or checkpoint first);
+  the SGNL plan's "restic takes the file as is" needs that step.
 - Migrations: SQLite starts from a baseline at upstream v7.0.0; each later
   upstream migration needs an SQLite twin in `internal/store/sqlite`.
 

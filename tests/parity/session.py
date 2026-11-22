@@ -104,8 +104,7 @@ def call(name, method, path, body=None, form=None, files=None, auth=True, raw=Fa
     if record:
         n += 1
         shown = json.dumps(scrub(parsed), indent=1, sort_keys=True) if not isinstance(parsed, str) else parsed
-        if raw is False and isinstance(parsed, str) and len(parsed) > 20000:
-            shown = parsed[:20000] + "\n<truncated>"
+
         with open(os.path.join(OUT, "api", f"{n:03d}-{name}.txt"), "w") as f:
             f.write(f"{method} {path}\nstatus {status}\n")
             if loc:
@@ -422,6 +421,21 @@ call("session-after-logout", "GET", "/api/profile", auth=False, opener=br1)
 call("login-old-password", "POST", "/admin/login", form={"username": "admin", "password": "adminpass123", "next": "/admin"}, auth=False, opener=br2)
 call("login-new-password", "POST", "/admin/login", form={"username": "admin", "password": "adminpass456", "next": "/admin"}, auth=False, opener=br2)
 call("session-profile-2", "GET", "/api/profile", auth=False, opener=br2)
+
+# Server-rendered admin pages (they embed data the handlers load).
+for nm, path in [("dashboard", "/admin"), ("lists", "/admin/lists"), ("list", f"/admin/lists/{l4}"),
+                 ("list-analytics", f"/admin/lists/analytics?id={l4}&{rng}"),
+                 ("campaigns", "/admin/campaigns"), ("campaign", f"/admin/campaigns/{c1}"),
+                 ("campaign-analytics", f"/admin/campaigns/analytics?id={c1}&{rng}"),
+                 ("campaign-activity", f"/admin/campaigns/analytics?id={c1}&{rng}&tab=activity"),
+                 ("templates", "/admin/templates"), ("template", f"/admin/templates/{t_camp}"),
+                 ("subscribers", "/admin/subscribers"), ("subscribers-list", f"/admin/subscribers/lists/{l4}"),
+                 ("subscribers-query", "/admin/subscribers?query=" + q("subscribers.name LIKE 'A%'")),
+                 ("subscriber", f"/admin/subscribers/{s1}"), ("subscriber-edit", f"/admin/subscribers/{s1}/edit"),
+                 ("bounces", "/admin/subscribers/bounces"), ("import", "/admin/subscribers/import"),
+                 ("media", "/admin/campaigns/media"), ("users", "/admin/users"), ("user-roles", "/admin/users/roles"),
+                 ("list-roles", "/admin/users/roles/lists"), ("profile", "/admin/user/profile"), ("settings", "/admin/settings")]:
+    call("admin-" + nm, "GET", path, auth=False, opener=br2)
 
 # ---------------------------------------------------------------- restricted API user (list-scoped)
 r_scoped = data(call("role-scoped-create", "POST", "/api/roles/users",
