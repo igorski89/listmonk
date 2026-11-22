@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"strings"
@@ -8,8 +9,9 @@ import (
 	"github.com/jmoiron/sqlx"
 	"github.com/knadh/koanf/v2"
 	"github.com/knadh/listmonk/internal/migrations"
+	lmstore "github.com/knadh/listmonk/internal/store"
+	"github.com/knadh/listmonk/internal/store/postgres"
 	"github.com/knadh/stuffbin"
-	"github.com/lib/pq"
 	"golang.org/x/mod/semver"
 )
 
@@ -51,7 +53,7 @@ var migList = []migFunc{
 // upgrade upgrades the database to the current version by running SQL migration files
 // for all version from the last known version to the current one.
 // If record is false, migration versions are not recorded in the DB (used for non-final builds).
-func upgrade(db *sqlx.DB, fs stuffbin.FileSystem, prompt bool, record bool) {
+func upgrade(st *postgres.Store, fs stuffbin.FileSystem, prompt bool, record bool) {
 	if prompt {
 		var ok string
 		fmt.Printf("** IMPORTANT: Take a backup of the database before upgrading.\n")
@@ -65,109 +67,33 @@ func upgrade(db *sqlx.DB, fs stuffbin.FileSystem, prompt bool, record bool) {
 		}
 	}
 
-	_, toRun, err := getPendingMigrations(db)
-	if err != nil {
-		lo.Fatalf("error checking migrations: %v", err)
-	}
-
-	// No migrations to run.
-	if len(toRun) == 0 {
-		lo.Printf("no upgrades to run. Database is up to date.")
-		return
-	}
-
 	// Execute migrations in succession.
-	for _, m := range toRun {
-		lo.Printf("running migration %s", m.version)
-		if err := m.fn(db, fs, ko, lo); err != nil {
-			lo.Fatalf("error running migration %s: %v", m.version, err)
-		}
-
-		// Record the migration version in the settings table. There was no
-		// settings table until v0.7.0, so ignore the no-table errors.
-		// For non-final builds, skip recording so migrations re-run on each boot.
-		if record {
-			if err := recordMigrationVersion(m.version, db); err != nil {
-				if isTableNotExistErr(err) {
-					continue
-				}
-				lo.Fatalf("error recording migration version %s: %v", m.version, err)
-			}
-		}
+	if err := st.Schema().Migrate(context.Background(), lmstore.MigrationEnv{FS: fs, Config: ko, Log: lo}, record); err != nil {
+		lo.Fatalf("%v", err)
 	}
-
-	lo.Printf("upgrade complete")
 }
 
 // checkUpgrade checks if the current database schema matches the expected
 // binary version.
-func checkUpgrade(db *sqlx.DB) {
-	lastVer, toRun, err := getPendingMigrations(db)
+func checkUpgrade(st *postgres.Store) {
+	ctx := context.Background()
+	vers, err := st.Schema().Pending(ctx)
 	if err != nil {
 		lo.Fatalf("error checking migrations: %v", err)
 	}
 
 	// No migrations to run.
-	if len(toRun) == 0 {
+	if len(vers) == 0 {
 		return
 	}
 
-	var vers []string
-	for _, m := range toRun {
-		vers = append(vers, m.version)
+	lastVer, err := st.Schema().Version(ctx)
+	if err != nil {
+		lo.Fatalf("error checking migrations: %v", err)
 	}
 
 	lo.Fatalf(`there are %d pending database upgrade(s): %v. The last upgrade was %s. Backup the database and run listmonk --upgrade`,
-		len(toRun), vers, lastVer)
-}
-
-// getPendingMigrations gets the pending migrations by comparing the last
-// recorded migration in the DB against all migrations listed in `migrations`.
-func getPendingMigrations(db *sqlx.DB) (string, []migFunc, error) {
-	lastVer, err := getLastMigrationVersion(db)
-	if err != nil {
-		return "", nil, err
-	}
-
-	// Iterate through the migration versions and get everything above the last
-	// upgraded semver.
-	var toRun []migFunc
-	for i, m := range migList {
-		if semver.Compare(m.version, lastVer) > 0 {
-			toRun = migList[i:]
-			break
-		}
-	}
-
-	return lastVer, toRun, nil
-}
-
-// getLastMigrationVersion returns the last migration semver recorded in the DB.
-// If there isn't any, `v0.0.0` is returned.
-func getLastMigrationVersion(db *sqlx.DB) (string, error) {
-	var v string
-	if err := db.Get(&v, `
-		SELECT COALESCE(
-			(SELECT value->>-1 FROM settings WHERE key='migrations'),
-		'v0.0.0')`); err != nil {
-		if isTableNotExistErr(err) {
-			return "v0.0.0", nil
-		}
-		return v, err
-	}
-	return v, nil
-}
-
-// isTableNotExistErr checks if the given error represents a Postgres/pq
-// "table does not exist" error.
-func isTableNotExistErr(err error) bool {
-	if p, ok := err.(*pq.Error); ok {
-		// `settings` table does not exist. It was introduced in v0.7.0.
-		if p.Code == "42P01" {
-			return true
-		}
-	}
-	return false
+		len(vers), vers, lastVer)
 }
 
 // isNonFinalBuild checks whether migrations may change between builds (nightly, RC, beta).

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/csv"
 	"encoding/json"
 	"fmt"
@@ -15,10 +16,10 @@ import (
 	"github.com/knadh/listmonk/internal/auth"
 	"github.com/knadh/listmonk/internal/i18n"
 	"github.com/knadh/listmonk/internal/notifs"
+	lmstore "github.com/knadh/listmonk/internal/store"
 	"github.com/knadh/listmonk/internal/subimporter"
 	"github.com/knadh/listmonk/models"
 	"github.com/labstack/echo/v5"
-	"github.com/lib/pq"
 )
 
 const (
@@ -1185,12 +1186,12 @@ func formatSQLExp(q string) string {
 // makeOptinNotifyHook returns an enclosed callback that sends optin confirmation e-mails.
 // This is plugged into the 'core' package to send optin confirmations when a new subscriber is
 // created via `core.CreateSubscriber()`.
-func makeOptinNotifyHook(unsubHeader bool, u *UrlConfig, q *models.Queries, i *i18n.I18n) func(sub models.Subscriber, listIDs []int) (int, error) {
+func makeOptinNotifyHook(unsubHeader bool, u *UrlConfig, st lmstore.Store, i *i18n.I18n) func(sub models.Subscriber, listIDs []int) (int, error) {
 	return func(sub models.Subscriber, listIDs []int) (int, error) {
 		// Fetch double opt-in lists from the given list IDs.
 		// Get the list of subscription lists where the subscriber hasn't confirmed.
-		var lists = []models.List{}
-		if err := q.GetSubscriberLists.Select(&lists, sub.ID, nil, pq.Array(listIDs), nil, models.SubscriptionStatusUnconfirmed, models.ListOptinDouble); err != nil {
+		lists, err := st.Subscribers().Lists(context.Background(), lmstore.SubscriberRef{ID: sub.ID}, listIDs, nil, models.SubscriptionStatusUnconfirmed, models.ListOptinDouble)
+		if err != nil {
 			lo.Printf("error fetching lists for opt-in: %s", err)
 			return 0, err
 		}

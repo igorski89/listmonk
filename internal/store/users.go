@@ -58,10 +58,11 @@ type UserStore interface {
 	// apart with a lookup on that failure path only.)
 	Update(ctx context.Context, id int, u auth.User) error
 
-	// UpdateProfile is a user editing themselves: name, e-mail (applied
-	// only to password-login users) and password (empty = keep;
-	// passwordLogin=false clears it). ErrNotFound if missing.
-	UpdateProfile(ctx context.Context, id int, name, email string, passwordLogin bool, password string) error
+	// UpdateProfile is a user editing themselves; only u's Name, Email
+	// (applied only to password-login users), PasswordLogin and Password
+	// (empty = keep; PasswordLogin=false clears it) are used. ErrNotFound
+	// if missing.
+	UpdateProfile(ctx context.Context, id int, u auth.User) error
 
 	// Login returns the enabled, password-login user whose password
 	// matches and records the login time; ErrNotFound otherwise (unknown
@@ -111,20 +112,20 @@ type RoleStore interface {
 	ListRoles(ctx context.Context, search string, s Sort) ([]auth.ListRole, error)
 
 	// CreateUserRole creates a user role; *ConflictError{Field: "name"}.
-	CreateUserRole(ctx context.Context, name string, perms []string) (auth.Role, error)
+	CreateUserRole(ctx context.Context, r auth.Role) (auth.Role, error)
 
-	// CreateListRole creates a list role with its list permissions,
-	// atomically; *ConflictError{Field: "name"}.
-	CreateListRole(ctx context.Context, name string, lists []auth.ListPermission) (auth.ListRole, error)
+	// CreateListRole creates a list role with its list permissions
+	// (r.Lists), atomically; *ConflictError{Field: "name"}.
+	CreateListRole(ctx context.Context, r auth.ListRole) (auth.ListRole, error)
 
 	// UpdateUserRole changes a user role's name and permissions;
 	// ErrNotFound if missing (or if id is a per-list child role).
-	UpdateUserRole(ctx context.Context, id int, name string, perms []string) (auth.Role, error)
+	UpdateUserRole(ctx context.Context, id int, r auth.Role) (auth.Role, error)
 
 	// UpdateListRole changes a list role's name and replaces its list
 	// permissions (lists not given are removed), atomically; upstream
 	// does this in two statements without a transaction.
-	UpdateListRole(ctx context.Context, id int, name string, lists []auth.ListPermission) (auth.ListRole, error)
+	UpdateListRole(ctx context.Context, id int, r auth.ListRole) (auth.ListRole, error)
 
 	// DeleteListPermission removes one list from a list role.
 	DeleteListPermission(ctx context.Context, roleID, listID int) error

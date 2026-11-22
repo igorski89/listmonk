@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"net/http"
 
-	"github.com/jmoiron/sqlx/types"
 	"github.com/knadh/listmonk/internal/utils"
 	"github.com/knadh/listmonk/models"
 	"github.com/labstack/echo/v5"
@@ -13,12 +12,10 @@ import (
 
 // GetSettings returns settings from the DB.
 func (c *Core) GetSettings() (models.Settings, error) {
-	var (
-		b   types.JSONText
-		out models.Settings
-	)
+	var out models.Settings
 
-	if err := c.q.GetSettings.Get(&b); err != nil {
+	b, err := c.st.Settings().All(bg)
+	if err != nil {
 		return out, echo.NewHTTPError(http.StatusInternalServerError,
 			c.i18n.Ts("globals.messages.errorFetching",
 				"name", "{globals.terms.settings}", "error", pqErrMsg(err)))
@@ -55,7 +52,7 @@ func (c *Core) UpdateSettings(s models.Settings) error {
 	}
 
 	// Update the settings in the DB.
-	if _, err := c.q.UpdateSettings.Exec(b); err != nil {
+	if err := c.st.Settings().Update(bg, b); err != nil {
 		return echo.NewHTTPError(http.StatusInternalServerError,
 			c.i18n.Ts("globals.messages.errorUpdating", "name", "{globals.terms.settings}", "error", pqErrMsg(err)))
 	}
@@ -81,7 +78,7 @@ func (c *Core) UpdateSettingsByKey(key string, value json.RawMessage) error {
 		}
 	}
 
-	if _, err := c.q.UpdateSettingsByKey.Exec(key, value); err != nil {
+	if err := c.st.Settings().Set(bg, key, value); err != nil {
 		return echo.NewHTTPError(http.StatusInternalServerError,
 			c.i18n.Ts("globals.messages.errorUpdating", "name", "{globals.terms.settings}", "error", pqErrMsg(err)))
 	}

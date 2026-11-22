@@ -22,6 +22,8 @@ HEX64 = re.compile(r"\b[0-9a-f]{64}\b")
 MSGID = re.compile(r"<[^<>@\s]+@[^<>\s]+>")
 BOUNDARY = re.compile(r"(boundary=\"?|--)[0-9a-f]{20,}")
 LOGTS = re.compile(r"\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2}(\.\d+)?")
+# Log lines carry source locations (file.go:123) that move with any edit.
+SRCLOC = re.compile(r"\b([a-z_]+\.go):\d+")
 ASSETV = re.compile(r"\?v=[0-9a-f]{6,}")
 # Permission lists come from Go map iteration: order is random.
 PERM_JSON = re.compile(r'\[(\s*"[a-z_]+:[a-z_]+",?\s*)+\]')
@@ -56,6 +58,7 @@ def main():
             s = BOUNDARY.sub(r"\1<boundary>", s)
             s = LOGTS.sub("<logts>", s)
             s = ASSETV.sub("?v=<v>", s)
+            s = SRCLOC.sub(r"\1:<line>", s)
             s = PERM_JSON.sub(lambda m: "[" + ", ".join(sorted(re.findall(r'"[a-z_]+:[a-z_]+"', m.group(0)))) + "]", s)
             s = PERM_PG.sub(lambda m: "{" + ",".join(sorted(m.group(0)[1:-1].split(","))) + "}", s)
             s = DURATION.sub(r'"\1": <dur>', s)

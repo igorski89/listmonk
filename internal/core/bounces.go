@@ -1,12 +1,12 @@
 package core
 
 import (
+	"errors"
 	"net/http"
-	"strings"
 
+	"github.com/knadh/listmonk/internal/store"
 	"github.com/knadh/listmonk/models"
 	"github.com/labstack/echo/v5"
-	"github.com/lib/pq"
 )
 
 var bounceQuerySortFields = []string{"email", "campaign_name", "source", models.FieldCreatedAt, "type"}
@@ -21,21 +21,12 @@ func (c *Core) QueryBounces(campID, subID int, source, typ, orderBy, order strin
 		order = models.OrderDesc
 	}
 
-	if orderBy == "campaign_name" {
-		orderBy = "campaigns.name"
-	}
-
-	out := []models.Bounce{}
-	stmt := strings.ReplaceAll(c.q.QueryBounces, "%order%", orderBy+" "+order+", bounces.id "+order)
-	if err := c.db.Select(&out, stmt, 0, campID, subID, source, typ, offset, limit, allLists, pq.Array(listIDs)); err != nil {
+	f := store.BounceFilter{CampaignID: campID, SubscriberID: subID, Source: source, Type: typ, Scope: scopeOf(allLists, listIDs)}
+	out, total, err := c.st.Bounces().Query(bg, f, store.Sort{Field: orderBy, Desc: order == models.OrderDesc}, store.Page{Offset: offset, Limit: limit})
+	if err != nil {
 		c.log.Printf("error fetching bounces: %v", err)
 		return nil, 0, echo.NewHTTPError(http.StatusInternalServerError,
 			c.i18n.Ts("globals.messages.errorFetching", "name", "{globals.terms.bounce}", "error", pqErrMsg(err)))
-	}
-
-	total := 0
-	if len(out) > 0 {
-		total = out[0].Total
 	}
 
 	return out, total, nil
@@ -43,21 +34,18 @@ func (c *Core) QueryBounces(campID, subID int, source, typ, orderBy, order strin
 
 // GetBounce retrieves bounce entries based on the given params.
 func (c *Core) GetBounce(id int, allLists bool, listIDs []int) (models.Bounce, error) {
-	var out []models.Bounce
-	stmt := strings.ReplaceAll(c.q.QueryBounces, "%order%", "id "+models.OrderAsc)
-	if err := c.db.Select(&out, stmt, id, 0, 0, "", "", 0, 1, allLists, pq.Array(listIDs)); err != nil {
+	out, err := c.st.Bounces().Get(bg, id, scopeOf(allLists, listIDs))
+	if errors.Is(err, store.ErrNotFound) {
+		return models.Bounce{}, echo.NewHTTPError(http.StatusBadRequest,
+			c.i18n.Ts("globals.messages.notFound", "name", "{globals.terms.bounce}"))
+	}
+	if err != nil {
 		c.log.Printf("error fetching bounces: %v", err)
 		return models.Bounce{}, echo.NewHTTPError(http.StatusInternalServerError,
 			c.i18n.Ts("globals.messages.errorFetching", "name", "{globals.terms.bounce}", "error", pqErrMsg(err)))
 	}
 
-	if len(out) == 0 {
-		return models.Bounce{}, echo.NewHTTPError(http.StatusBadRequest,
-			c.i18n.Ts("globals.messages.notFound", "name", "{globals.terms.bounce}"))
-
-	}
-
-	return out[0], nil
+	return out, nil
 }
 
 // RecordBounce records a new bounce.
@@ -67,19 +55,10 @@ func (c *Core) RecordBounce(b models.Bounce) error {
 		return echo.NewHTTPError(http.StatusBadRequest, c.i18n.Ts("globals.messages.invalidData")+": "+b.Type)
 	}
 
-	_, err := c.q.RecordBounce.Exec(b.SubscriberUUID,
-		b.Email,
-		b.CampaignUUID,
-		b.Type,
-		b.Source,
-		b.Meta,
-		b.CreatedAt,
-		action.Count,
-		action.Action)
-
+	err := c.st.Bounces().Record(bg, b, store.BounceAction{Count: action.Count, Action: action.Action})
 	if err != nil {
 		// Ignore the error if it complained of no subscriber.
-		if pqErr, ok := err.(*pq.Error); ok && pqErr.Column == "subscriber_id" {
+		if errors.Is(err, store.ErrNotFound) {
 			c.log.Printf("bounced subscriber (%s / %s) not found", b.SubscriberUUID, b.Email)
 			return nil
 		}
@@ -92,7 +71,8 @@ func (c *Core) RecordBounce(b models.Bounce) error {
 
 // BlocklistBouncedSubscribers blocklists subscribers matching bounce IDs or filters.
 func (c *Core) BlocklistBouncedSubscribers(ids []int, campID int, source, typ string, allLists bool, listIDs []int) error {
-	if _, err := c.q.BlocklistBouncedSubscribers.Exec(pq.Array(ids), campID, source, typ, allLists, pq.Array(listIDs)); err != nil {
+	f := store.BounceFilter{IDs: ids, All: len(ids) == 0, CampaignID: campID, Source: source, Type: typ, Scope: scopeOf(allLists, listIDs)}
+	if err := c.st.Bounces().BlocklistSubscribers(bg, f); err != nil {
 		c.log.Printf("error blocklisting bounced subscribers: %v", err)
 		return echo.NewHTTPError(http.StatusInternalServerError, c.i18n.Ts("subscribers.errorBlocklisting", "error", err.Error()))
 	}
@@ -107,10 +87,12 @@ func (c *Core) DeleteBounce(id int, allLists bool, listIDs []int) error {
 
 // DeleteBounces deletes bounce records by IDs or filters.
 func (c *Core) DeleteBounces(ids []int, all bool, campID int, source, typ string, allLists bool, listIDs []int) error {
-	if _, err := c.q.DeleteBounces.Exec(pq.Array(ids), all, campID, source, typ, allLists, pq.Array(listIDs)); err != nil {
+	f := store.BounceFilter{IDs: ids, All: all, CampaignID: campID, Source: source, Type: typ, Scope: scopeOf(allLists, listIDs)}
+	if _, err := c.st.Bounces().Delete(bg, f); err != nil {
 		c.log.Printf("error deleting lists: %v", err)
 		return echo.NewHTTPError(http.StatusInternalServerError,
 			c.i18n.Ts("globals.messages.errorDeleting", "name", "{globals.terms.list}", "error", pqErrMsg(err)))
 	}
+
 	return nil
 }

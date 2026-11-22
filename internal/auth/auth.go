@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"crypto/subtle"
-	"database/sql"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -20,7 +19,6 @@ import (
 
 	"github.com/coreos/go-oidc/v3/oidc"
 	"github.com/labstack/echo/v5"
-	"github.com/zerodha/simplesessions/stores/postgres/v3"
 	"github.com/zerodha/simplesessions/v3"
 	"golang.org/x/oauth2"
 )
@@ -76,7 +74,7 @@ type Auth struct {
 	verifier  *oidc.IDTokenVerifier
 	provider  *oidc.Provider
 	sess      *simplesessions.Manager
-	sessStore *postgres.Store
+	sessStore SessionStore
 	cb        *Callbacks
 	log       *log.Logger
 
@@ -87,7 +85,14 @@ type Auth struct {
 var sessPruneInterval = time.Hour * 12
 
 // New returns an initialize Auth instance.
-func New(cfg Config, db *sql.DB, cb *Callbacks, lo *log.Logger) (*Auth, error) {
+// SessionStore persists login sessions: a simplesessions store that can
+// prune expired sessions. The storage layer provides it.
+type SessionStore interface {
+	simplesessions.Store
+	Prune() error
+}
+
+func New(cfg Config, st SessionStore, cb *Callbacks, lo *log.Logger) (*Auth, error) {
 	if cfg.SessionDuration < time.Second {
 		cfg.SessionDuration = 7 * 24 * time.Hour
 	}
@@ -109,9 +114,8 @@ func New(cfg Config, db *sql.DB, cb *Callbacks, lo *log.Logger) (*Auth, error) {
 			MaxAge:     cfg.SessionDuration,
 		},
 	})
-	st, err := postgres.New(postgres.Opt{TTL: cfg.SessionDuration}, db)
-	if err != nil {
-		return nil, err
+	if st == nil {
+		return nil, errors.New("auth: no session store")
 	}
 	a.sessStore = st
 	a.sess.UseStore(st)

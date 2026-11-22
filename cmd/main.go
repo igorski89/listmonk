@@ -13,7 +13,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/jmoiron/sqlx"
 	"github.com/knadh/koanf/providers/env"
 	"github.com/knadh/koanf/v2"
 	"github.com/knadh/listmonk/internal/auth"
@@ -26,6 +25,7 @@ import (
 	"github.com/knadh/listmonk/internal/manager"
 	"github.com/knadh/listmonk/internal/media"
 	"github.com/knadh/listmonk/internal/messenger/email"
+	"github.com/knadh/listmonk/internal/store/postgres"
 	"github.com/knadh/listmonk/internal/subimporter"
 	"github.com/knadh/listmonk/models"
 	"github.com/knadh/paginator/v2"
@@ -37,8 +37,7 @@ type App struct {
 	cfg        *Config
 	urlCfg     *UrlConfig
 	fs         stuffbin.FileSystem
-	db         *sqlx.DB
-	queries    *models.Queries
+	st         *postgres.Store
 	core       *core.Core
 	manager    *manager.Manager
 	messengers []manager.Messenger
@@ -81,10 +80,9 @@ var (
 	bufLog   = buflog.New(5000)
 	lo       = log.New(io.MultiWriter(os.Stdout, bufLog, evStream.ErrWriter()), "", log.Ldate|log.Ltime|log.Lmicroseconds|log.Lshortfile)
 
-	ko      = koanf.New(".")
-	fs      stuffbin.FileSystem
-	db      *sqlx.DB
-	queries *models.Queries
+	ko = koanf.New(".")
+	fs stuffbin.FileSystem
+	st *postgres.Store
 
 	// Compile-time variables.
 	buildString   string
@@ -139,10 +137,13 @@ func init() {
 	}
 
 	// Connect to the database.
-	db = initDB()
+	db := initDB()
 
 	// Initialize the embedded filesystem with static assets.
 	fs = initFS(appDir, ko.String("static-dir"), ko.String("i18n-dir"))
+
+	// The storage layer, over the SQL queries from the queries files.
+	st = initStore(db, readQueries(queryFilePath, fs))
 
 	isNonFinal := isNonFinalBuild(versionString)
 
@@ -157,12 +158,12 @@ func init() {
 			last--
 		}
 
-		install(migList[last].version, db, fs, !ko.Bool("yes"), ko.Bool("idempotent"))
+		install(migList[last].version, st, fs, !ko.Bool("yes"), ko.Bool("idempotent"))
 		os.Exit(0)
 	}
 
 	// Check if the DB schema is installed.
-	if ok, err := checkSchema(db); err != nil {
+	if ok, err := st.Schema().Installed(context.Background()); err != nil {
 		log.Fatalf("error checking schema in DB: %v", err)
 	} else if !ok {
 		lo.Fatal("the database does not appear to be setup. Run --install.")
@@ -172,7 +173,7 @@ func init() {
 		// Even on explicit upgrade runs, for unstable builds, do not record the last
 		// migration version in the DB.
 		lo.Printf("running upgrade...")
-		upgrade(db, fs, !ko.Bool("yes"), !isNonFinal)
+		upgrade(st, fs, !ko.Bool("yes"), !isNonFinal)
 		os.Exit(0)
 	}
 
@@ -181,22 +182,17 @@ func init() {
 	// non-final releases, they may change multiple times.
 	if isNonFinal {
 		lo.Printf("auto-running pending migrations for non-final build %s", versionString)
-		upgrade(db, fs, false, false)
+		upgrade(st, fs, false, false)
 	} else {
 		// Before the queries are prepared, see if there are pending upgrades.
-		checkUpgrade(db)
+		checkUpgrade(st)
 	}
-
-	// Read the SQL queries from the queries file.
-	qMap := readQueries(queryFilePath, fs)
 
 	// Load settings from DB.
-	if q, ok := qMap["get-settings"]; ok {
-		initSettings(q.Query, db, ko)
-	}
+	initSettings(st, ko)
 
 	// Prepare queries.
-	queries = prepareQueries(qMap, db, ko)
+	configureStore(st, ko)
 }
 
 func main() {
@@ -213,22 +209,22 @@ func main() {
 		// Initialize the media store.
 		media = initMediaStore(ko)
 
-		fbOptinNotify = makeOptinNotifyHook(ko.Bool("privacy.unsubscribe_header"), urlCfg, queries, i18n)
+		fbOptinNotify = makeOptinNotifyHook(ko.Bool("privacy.unsubscribe_header"), urlCfg, st, i18n)
 
 		// Crud core.
-		core = initCore(fbOptinNotify, queries, db, i18n, ko)
+		core = initCore(fbOptinNotify, st, i18n, ko)
 
 		// Initialize all messengers, SMTP and postback.
 		msgrs = append(initSMTPMessengers(), initPostbackMessengers(ko)...)
 
 		// Campaign manager.
-		mgr = initCampaignManager(msgrs, queries, urlCfg, core, media, i18n, ko)
+		mgr = initCampaignManager(msgrs, st, urlCfg, core, media, i18n, ko)
 
 		// Bulk importer.
-		importer = initImporter(queries, db, core, i18n, ko)
+		importer = initImporter(st, core, i18n, ko)
 
 		// Initialize the auth manager.
-		hasUsers, auth = initAuth(core, db.DB, ko)
+		hasUsers, auth = initAuth(core, st, ko)
 
 		// Initialize the webhook/POP3 bounce processor.
 		bounce *bounce.Manager
@@ -241,7 +237,7 @@ func main() {
 	// Initialize the bounce manager that processes bounces from webhooks and
 	// POP3 mailbox scanning.
 	if ko.Bool("bounce.enabled") {
-		bounce = initBounceManager(core.RecordBounce, queries.RecordBounce, lo, ko)
+		bounce = initBounceManager(core.RecordBounce, lo, ko)
 	}
 
 	// Assign the default `email` messenger to the app.
@@ -264,7 +260,7 @@ func main() {
 	}
 
 	// Start cronjobs.
-	initCron(core, db)
+	initCron(core, st)
 
 	// Start the campaign manager workers. The campaign batches (fetch from DB, push out
 	// messages) get processed at the specified interval.
@@ -276,8 +272,7 @@ func main() {
 		cfg:        cfg,
 		urlCfg:     urlCfg,
 		fs:         fs,
-		db:         db,
-		queries:    queries,
+		st:         st,
 		core:       core,
 		manager:    mgr,
 		messengers: msgrs,
@@ -302,7 +297,7 @@ func main() {
 		}),
 
 		fnOptinNotify: fbOptinNotify,
-		about:         initAbout(queries, db),
+		about:         initAbout(st),
 		chReload:      chReload,
 
 		// If there are no users, then the app needs to prompt for new user setup.
@@ -337,7 +332,7 @@ func main() {
 		mgr.Close()
 
 		// Close the DB pool.
-		db.Close()
+		st.Close()
 
 		// Close the messenger pool.
 		for _, m := range app.messengers {

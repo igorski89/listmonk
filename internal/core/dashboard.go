@@ -9,26 +9,22 @@ import (
 
 // GetDashboardCharts returns chart data points to render on the dashboard.
 func (c *Core) GetDashboardCharts() (types.JSONText, error) {
-	_ = c.refreshCache(matDashboardCharts, false)
-
-	var out types.JSONText
-	if err := c.q.GetDashboardCharts.Get(&out); err != nil {
+	out, err := c.st.Stats().DashboardCharts(bg)
+	if err != nil {
 		return nil, echo.NewHTTPError(http.StatusInternalServerError,
 			c.i18n.Ts("globals.messages.errorFetching", "name", "dashboard charts", "error", pqErrMsg(err)))
 	}
 
-	return out, nil
+	return types.JSONText(out), nil
 }
 
 // GetDashboardCounts returns stats counts to show on the dashboard.
 func (c *Core) GetDashboardCounts() (types.JSONText, error) {
-	_ = c.refreshCache(matDashboardCounts, false)
-
-	var out types.JSONText
-	if err := c.q.GetDashboardCounts.Get(&out); err != nil {
+	out, err := c.st.Stats().DashboardCounts(bg)
+	if err != nil {
 		return nil, echo.NewHTTPError(http.StatusInternalServerError,
 			c.i18n.Ts("globals.messages.errorFetching", "name", "dashboard stats", "error", pqErrMsg(err)))
 	}
 
-	return out, nil
+	return types.JSONText(out), nil
 }

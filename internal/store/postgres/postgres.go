@@ -48,13 +48,6 @@ func New(db *sqlx.DB, qMap goyesql.Queries, migs []Migration, lo *log.Logger) *S
 	return &Store{db: db, qMap: qMap, migs: migs, log: lo}
 }
 
-// DB returns the connection pool, for the few callers that still need it
-// directly during the migration to the store (to be removed).
-func (s *Store) DB() *sqlx.DB { return s.db }
-
-// Queries returns the prepared queries (nil before Configure).
-func (s *Store) Queries() *models.Queries { return s.q }
-
 // Configure prepares the queries, interpolating the ones that depend on
 // settings, and opens the session store.
 func (s *Store) Configure(o store.Options) error {

@@ -1,16 +1,15 @@
 package core
 
 import (
-	"database/sql"
 	"encoding/json"
+	"errors"
 	"net/http"
-	"strconv"
 
 	"github.com/knadh/listmonk/internal/auth"
+	"github.com/knadh/listmonk/internal/store"
 	"github.com/knadh/listmonk/internal/utils"
 	"github.com/knadh/listmonk/models"
 	"github.com/labstack/echo/v5"
-	"github.com/lib/pq"
 	"gopkg.in/volatiletech/null.v6"
 )
 
@@ -20,11 +19,9 @@ func (c *Core) GetUsers(typ, status string, userRoleID, listRoleID int, orderBy,
 		order = models.OrderAsc
 	}
 
-	var (
-		out     = []auth.User{}
-		_, stmt = makeSearchQuery("", orderBy, order, c.q.GetUsers, userQuerySortFields)
-	)
-	if err := c.db.Select(&out, stmt, typ, status, userRoleID, listRoleID); err != nil {
+	out, err := c.st.Users().Query(bg, store.UserFilter{Type: typ, Status: status, UserRoleID: userRoleID, ListRoleID: listRoleID},
+		sortOf(orderBy, order, userQuerySortFields))
+	if err != nil {
 		return nil, echo.NewHTTPError(http.StatusInternalServerError,
 			c.i18n.Ts("globals.messages.errorFetching", "name", "{globals.terms.users}", "error", pqErrMsg(err)))
 	}
@@ -34,12 +31,11 @@ func (c *Core) GetUsers(typ, status string, userRoleID, listRoleID int, orderBy,
 
 // GetUser retrieves a specific user based on any one given identifier.
 func (c *Core) GetUser(id int, username, email string) (auth.User, error) {
-	var out auth.User
-	if err := c.q.GetUser.Get(&out, id, username, email); err != nil {
-		if err == sql.ErrNoRows {
+	out, err := c.st.Users().Get(bg, store.UserRef{ID: id, Username: username, Email: email})
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
 			return out, echo.NewHTTPError(http.StatusNotFound,
 				c.i18n.Ts("globals.messages.notFound", "name", "{globals.terms.user}"))
-
 		}
 
 		return out, echo.NewHTTPError(http.StatusInternalServerError,
@@ -72,8 +68,10 @@ func (c *Core) CreateUser(u auth.User) (auth.User, error) {
 		dbPassword = null.String{String: auth.HashAPIToken(tk), Valid: true}
 	}
 
-	var id int
-	if err := c.q.CreateUser.Get(&id, u.Username, u.PasswordLogin, dbPassword, u.Email, u.Name, u.Type, u.UserRoleID, u.ListRoleID, u.Status); err != nil {
+	dbUser := u
+	dbUser.Password = dbPassword
+	id, err := c.st.Users().Create(bg, dbUser)
+	if err != nil {
 		return auth.User{}, echo.NewHTTPError(http.StatusInternalServerError,
 			c.i18n.Ts("globals.messages.errorCreating", "name", "{globals.terms.user}", "error", pqErrMsg(err)))
 	}
@@ -94,21 +92,12 @@ func (c *Core) CreateUser(u auth.User) (auth.User, error) {
 
 // UpdateUser updates a given user.
 func (c *Core) UpdateUser(id int, u auth.User) (auth.User, error) {
-	listRoleID := 0
-	if u.ListRoleID == nil {
-		listRoleID = -1
-	} else {
-		listRoleID = *u.ListRoleID
-	}
-
-	res, err := c.q.UpdateUser.Exec(id, u.Username, u.PasswordLogin, u.Password, u.Email, u.Name, u.Type, u.UserRoleID, listRoleID, u.Status)
-	if err != nil {
+	if err := c.st.Users().Update(bg, id, u); err != nil {
+		if errors.Is(err, store.ErrLastSuperAdmin) || errors.Is(err, store.ErrNotFound) {
+			return auth.User{}, echo.NewHTTPError(http.StatusBadRequest, c.i18n.T("users.needSuper"))
+		}
 		return auth.User{}, echo.NewHTTPError(http.StatusInternalServerError,
 			c.i18n.Ts("globals.messages.errorUpdating", "name", "{globals.terms.user}", "error", pqErrMsg(err)))
-	}
-
-	if n, _ := res.RowsAffected(); n == 0 {
-		return auth.User{}, echo.NewHTTPError(http.StatusBadRequest, c.i18n.T("users.needSuper"))
 	}
 
 	out, err := c.GetUser(id, "", "")
@@ -118,15 +107,13 @@ func (c *Core) UpdateUser(id int, u auth.User) (auth.User, error) {
 
 // UpdateUserProfile updates the basic fields of a given uesr (name, email, password).
 func (c *Core) UpdateUserProfile(id int, u auth.User) (auth.User, error) {
-	res, err := c.q.UpdateUserProfile.Exec(id, u.Name, u.Email, u.PasswordLogin, u.Password)
-	if err != nil {
+	if err := c.st.Users().UpdateProfile(bg, id, u); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return auth.User{}, echo.NewHTTPError(http.StatusBadRequest,
+				c.i18n.Ts("globals.messages.notFound", "name", "{globals.terms.user}"))
+		}
 		return auth.User{}, echo.NewHTTPError(http.StatusInternalServerError,
 			c.i18n.Ts("globals.messages.errorUpdating", "name", "{globals.terms.user}", "error", pqErrMsg(err)))
-	}
-
-	if n, _ := res.RowsAffected(); n == 0 {
-		return auth.User{}, echo.NewHTTPError(http.StatusBadRequest,
-			c.i18n.Ts("globals.messages.notFound", "name", "{globals.terms.user}"))
 	}
 
 	return c.GetUser(id, "", "")
@@ -134,7 +121,7 @@ func (c *Core) UpdateUserProfile(id int, u auth.User) (auth.User, error) {
 
 // UpdateUserLogin updates a user's record post-login.
 func (c *Core) UpdateUserLogin(id int, avatar string) error {
-	if _, err := c.q.UpdateUserLogin.Exec(id, avatar); err != nil {
+	if err := c.st.Users().RecordLogin(bg, id, avatar); err != nil {
 		return echo.NewHTTPError(http.StatusInternalServerError,
 			c.i18n.Ts("globals.messages.errorUpdating", "name", "{globals.terms.user}", "error", pqErrMsg(err)))
 	}
@@ -144,7 +131,7 @@ func (c *Core) UpdateUserLogin(id int, avatar string) error {
 
 // SetTwoFA sets or clears the 2FA configuration for a user.
 func (c *Core) SetTwoFA(id int, twofaType, twofaKey string) error {
-	if _, err := c.q.SetUserTwoFA.Exec(id, twofaType, twofaKey); err != nil {
+	if err := c.st.Users().SetTwoFA(bg, id, twofaType, twofaKey); err != nil {
 		return echo.NewHTTPError(http.StatusInternalServerError,
 			c.i18n.Ts("globals.messages.errorUpdating", "name", "{globals.terms.user}", "error", pqErrMsg(err)))
 	}
@@ -155,21 +142,17 @@ func (c *Core) SetTwoFA(id int, twofaType, twofaKey string) error {
 // DeleteUserSessions deletes all sessions for a given user ID, optionally
 // excluding a specific session ID (to keep the current session alive).
 func (c *Core) DeleteUserSessions(userID int, excludeID string) error {
-	if _, err := c.q.DeleteUserSessions.Exec(strconv.Itoa(userID), excludeID); err != nil {
-		return err
-	}
-	return nil
+	return c.st.Users().DeleteSessions(bg, userID, excludeID)
 }
 
 // DeleteUsers deletes a given user.
 func (c *Core) DeleteUsers(ids []int) error {
-	res, err := c.q.DeleteUsers.Exec(pq.Array(ids))
-	if err != nil {
+	if _, err := c.st.Users().Delete(bg, ids); err != nil {
+		if errors.Is(err, store.ErrLastSuperAdmin) {
+			return echo.NewHTTPError(http.StatusBadRequest, c.i18n.T("users.needSuper"))
+		}
 		return echo.NewHTTPError(http.StatusInternalServerError,
 			c.i18n.Ts("globals.messages.errorDeleting", "name", "{globals.terms.user}", "error", pqErrMsg(err)))
-	}
-	if num, err := res.RowsAffected(); err != nil || num == 0 {
-		return echo.NewHTTPError(http.StatusBadRequest, c.i18n.T("users.needSuper"))
 	}
 
 	return nil
@@ -177,9 +160,9 @@ func (c *Core) DeleteUsers(ids []int) error {
 
 // LoginUser attempts to log the given user_id in by matching the password.
 func (c *Core) LoginUser(username, password string) (auth.User, error) {
-	var out auth.User
-	if err := c.q.LoginUser.Get(&out, username, password); err != nil {
-		if err == sql.ErrNoRows {
+	out, err := c.st.Users().Login(bg, username, password)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
 			return out, echo.NewHTTPError(http.StatusForbidden, c.i18n.T("users.invalidLogin"))
 		}
 

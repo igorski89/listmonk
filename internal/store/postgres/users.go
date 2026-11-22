@@ -64,8 +64,8 @@ func (s users) Update(ctx context.Context, id int, u auth.User) error {
 	return nil
 }
 
-func (s users) UpdateProfile(ctx context.Context, id int, name, email string, passwordLogin bool, password string) error {
-	res, err := s.q.UpdateUserProfile.ExecContext(ctx, id, name, email, passwordLogin, password)
+func (s users) UpdateProfile(ctx context.Context, id int, u auth.User) error {
+	res, err := s.q.UpdateUserProfile.ExecContext(ctx, id, u.Name, u.Email, u.PasswordLogin, u.Password)
 	if err != nil {
 		return wrap(err)
 	}
@@ -152,28 +152,28 @@ func (s roles) ListRoles(ctx context.Context, search string, srt store.Sort) ([]
 	return out, nil
 }
 
-func (s roles) CreateUserRole(ctx context.Context, name string, perms []string) (auth.Role, error) {
+func (s roles) CreateUserRole(ctx context.Context, r auth.Role) (auth.Role, error) {
 	var out auth.Role
-	if err := s.q.CreateRole.GetContext(ctx, &out, name, auth.RoleTypeUser, pq.Array(perms)); err != nil {
+	if err := s.q.CreateRole.GetContext(ctx, &out, r.Name, auth.RoleTypeUser, pq.Array(r.Permissions)); err != nil {
 		return out, wrap(err)
 	}
 	return out, nil
 }
 
-func (s roles) CreateListRole(ctx context.Context, name string, lists []auth.ListPermission) (auth.ListRole, error) {
+func (s roles) CreateListRole(ctx context.Context, r auth.ListRole) (auth.ListRole, error) {
 	var out auth.ListRole
 	err := s.inTx(ctx, func(tx *sqlx.Tx) error {
-		if err := tx.StmtxContext(ctx, s.q.CreateRole).GetContext(ctx, &out, name, auth.RoleTypeList, pq.Array([]string{})); err != nil {
+		if err := tx.StmtxContext(ctx, s.q.CreateRole).Unsafe().GetContext(ctx, &out, r.Name, auth.RoleTypeList, pq.Array([]string{})); err != nil {
 			return err
 		}
-		return s.upsertListPermissions(ctx, tx, out.ID, lists)
+		return s.upsertListPermissions(ctx, tx, out.ID, r.Lists)
 	})
 	return out, wrap(err)
 }
 
-func (s roles) UpdateUserRole(ctx context.Context, id int, name string, perms []string) (auth.Role, error) {
+func (s roles) UpdateUserRole(ctx context.Context, id int, r auth.Role) (auth.Role, error) {
 	var out auth.Role
-	if err := s.q.UpdateRole.GetContext(ctx, &out, id, name, pq.Array(perms)); err != nil {
+	if err := s.q.UpdateRole.GetContext(ctx, &out, id, r.Name, pq.Array(r.Permissions)); err != nil {
 		return out, notFound(err)
 	}
 	if out.ID == 0 {
@@ -182,16 +182,16 @@ func (s roles) UpdateUserRole(ctx context.Context, id int, name string, perms []
 	return out, nil
 }
 
-func (s roles) UpdateListRole(ctx context.Context, id int, name string, lists []auth.ListPermission) (auth.ListRole, error) {
+func (s roles) UpdateListRole(ctx context.Context, id int, r auth.ListRole) (auth.ListRole, error) {
 	var out auth.ListRole
 	err := s.inTx(ctx, func(tx *sqlx.Tx) error {
-		if err := tx.StmtxContext(ctx, s.q.UpdateRole).GetContext(ctx, &out, id, name, pq.Array([]string{})); err != nil {
+		if err := tx.StmtxContext(ctx, s.q.UpdateRole).Unsafe().GetContext(ctx, &out, id, r.Name, pq.Array([]string{})); err != nil {
 			return err
 		}
 		if out.ID == 0 {
 			return store.ErrNotFound
 		}
-		return s.upsertListPermissions(ctx, tx, out.ID, lists)
+		return s.upsertListPermissions(ctx, tx, out.ID, r.Lists)
 	})
 	if errors.Is(err, sql.ErrNoRows) {
 		return out, store.ErrNotFound

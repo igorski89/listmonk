@@ -3,8 +3,8 @@ package main
 import (
 	"bytes"
 	"compress/gzip"
+	"context"
 	"crypto/md5"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -31,7 +31,6 @@ import (
 	"github.com/jmoiron/sqlx"
 	"github.com/jmoiron/sqlx/types"
 	"github.com/knadh/goyesql/v2"
-	goyesqlx "github.com/knadh/goyesql/v2/sqlx"
 	koanfmaps "github.com/knadh/koanf/maps"
 	"github.com/knadh/koanf/parsers/toml"
 	"github.com/knadh/koanf/providers/confmap"
@@ -51,11 +50,12 @@ import (
 	"github.com/knadh/listmonk/internal/messenger/email"
 	"github.com/knadh/listmonk/internal/messenger/postback"
 	"github.com/knadh/listmonk/internal/notifs"
+	lmstore "github.com/knadh/listmonk/internal/store"
+	"github.com/knadh/listmonk/internal/store/postgres"
 	"github.com/knadh/listmonk/internal/subimporter"
 	"github.com/knadh/listmonk/models"
 	"github.com/knadh/stuffbin"
 	"github.com/labstack/echo/v5"
-	"github.com/lib/pq"
 	flag "github.com/spf13/pflag"
 	"golang.org/x/text/language"
 	"golang.org/x/text/message"
@@ -414,68 +414,42 @@ func readQueries(dir string, fs stuffbin.FileSystem) goyesql.Queries {
 }
 
 // prepareQueries queries prepares a query map and returns a *Queries
-func prepareQueries(qMap goyesql.Queries, db *sqlx.DB, ko *koanf.Koanf) *models.Queries {
-	var (
-		countQuery = "get-campaign-analytics-counts"
-		linkSel    = "*"
-	)
-	if ko.Bool("privacy.individual_tracking") {
-		countQuery = "get-campaign-analytics-unique-counts"
-		linkSel = "DISTINCT subscriber_id"
+// initStore returns the storage layer over the connection pool and the
+// parsed queries/*.sql.
+func initStore(db *sqlx.DB, qMap goyesql.Queries) *postgres.Store {
+	migs := make([]postgres.Migration, 0, len(migList))
+	for _, m := range migList {
+		migs = append(migs, postgres.Migration{Version: m.version, Fn: m.fn})
+	}
+	return postgres.New(db, qMap, migs, lo)
+}
+
+// configureStore applies the settings-dependent store options and
+// prepares the queries.
+func configureStore(st *postgres.Store, ko *koanf.Koanf) {
+	// Same default as the auth module's.
+	ttl := ko.Duration("security.session_duration")
+	if ttl < time.Second {
+		ttl = 7 * 24 * time.Hour
 	}
 
-	// These don't exist in the SQL file but are in the queries struct to be prepared.
-	qMap["get-campaign-view-counts"] = &goyesql.Query{
-		Query: fmt.Sprintf(qMap[countQuery].Query, "campaign_views"),
-		Tags:  map[string]string{"name": "get-campaign-view-counts"},
-	}
-	qMap["get-campaign-click-counts"] = &goyesql.Query{
-		Query: fmt.Sprintf(qMap[countQuery].Query, "link_clicks"),
-		Tags:  map[string]string{"name": "get-campaign-click-counts"},
-	}
-	for typ, table := range map[string]string{"view": "campaign_views", "click": "link_clicks"} {
-		for _, resource := range []string{"campaign", "list"} {
-			name := "get-" + resource + "-total-" + typ + "-counts"
-			qMap[name] = &goyesql.Query{
-				Query: fmt.Sprintf(qMap["get-"+resource+"-analytics-counts"].Query, table),
-				Tags:  map[string]string{"name": name},
-			}
-		}
-	}
-	qMap["get-campaign-link-counts"].Query = fmt.Sprintf(qMap["get-campaign-link-counts"].Query, linkSel)
-
-	// List metrics use the same tracking semantics, grouped by campaign lists.
-	for typ, table := range map[string]string{"view": "campaign_views", "click": "link_clicks", "bounce": "bounces"} {
-		query := "get-list-analytics-counts"
-		if typ != "bounce" && ko.Bool("privacy.individual_tracking") {
-			query = "get-list-analytics-unique-counts"
-		}
-		name := "get-list-" + typ + "-counts"
-		qMap[name] = &goyesql.Query{
-			Query: fmt.Sprintf(qMap[query].Query, table),
-			Tags:  map[string]string{"name": name},
-		}
-	}
-	qMap["get-list-link-counts"].Query = fmt.Sprintf(qMap["get-list-link-counts"].Query, linkSel)
-
-	// Scan and prepare all queries.
-	var q models.Queries
-	if err := goyesqlx.ScanToStruct(&q, qMap, db); err != nil {
+	if err := st.Configure(lmstore.Options{
+		IndividualTracking: ko.Bool("privacy.individual_tracking"),
+		CacheSlowQueries:   ko.Bool("app.cache_slow_queries"),
+		SessionTTL:         ttl,
+	}); err != nil {
 		lo.Fatalf("error preparing SQL queries: %v", err)
 	}
-
-	return &q
 }
 
 // initSettings loads settings from the DB into the given Koanf map.
-func initSettings(query string, db *sqlx.DB, ko *koanf.Koanf) {
-	var s types.JSONText
-	if err := db.Get(&s, query); err != nil {
+func initSettings(st *postgres.Store, ko *koanf.Koanf) {
+	s, err := st.Settings().All(context.Background())
+	if err != nil {
 		msg := err.Error()
-		if err, ok := err.(*pq.Error); ok {
-			if err.Detail != "" {
-				msg = fmt.Sprintf("%s. %s", err, err.Detail)
-			}
+		var de *lmstore.DBError
+		if errors.As(err, &de) && de.Detail != "" {
+			msg = fmt.Sprintf("%s. %s", de.Err, de.Detail)
 		}
 
 		lo.Fatalf("error reading settings from DB: %s", msg)
@@ -629,16 +603,15 @@ func initI18n(lang string, fs stuffbin.FileSystem) *i18n.I18n {
 }
 
 // initCore initializes the CRUD DB core .
-func initCore(fnNotify func(sub models.Subscriber, listIDs []int) (int, error), queries *models.Queries, db *sqlx.DB, i *i18n.I18n, ko *koanf.Koanf) *core.Core {
+func initCore(fnNotify func(sub models.Subscriber, listIDs []int) (int, error), st lmstore.Store, i *i18n.I18n, ko *koanf.Koanf) *core.Core {
 	opt := &core.Opt{
 		Constants: core.Constants{
 			SendOptinConfirmation: ko.Bool("app.send_optin_confirmation"),
 			CacheSlowQueries:      ko.Bool("app.cache_slow_queries"),
 		},
-		Queries: queries,
-		DB:      db,
-		I18n:    i,
-		Log:     lo,
+		Store: st,
+		I18n:  i,
+		Log:   lo,
 	}
 
 	// Load bounce config.
@@ -653,7 +626,7 @@ func initCore(fnNotify func(sub models.Subscriber, listIDs []int) (int, error), 
 }
 
 // initCampaignManager initializes the campaign manager.
-func initCampaignManager(msgrs []manager.Messenger, q *models.Queries, u *UrlConfig, co *core.Core, md media.Store, i *i18n.I18n, ko *koanf.Koanf) *manager.Manager {
+func initCampaignManager(msgrs []manager.Messenger, st lmstore.Store, u *UrlConfig, co *core.Core, md media.Store, i *i18n.I18n, ko *koanf.Koanf) *manager.Manager {
 	if ko.Bool("passive") {
 		lo.Println("running in passive mode. won't process campaigns.")
 	}
@@ -679,7 +652,7 @@ func initCampaignManager(msgrs []manager.Messenger, q *models.Queries, u *UrlCon
 		SlidingWindowRate:     ko.Int("app.message_sliding_window_rate"),
 		ScanInterval:          time.Second * 5,
 		ScanCampaigns:         !ko.Bool("passive"),
-	}, newManagerStore(q, co, md), i, lo)
+	}, newManagerStore(st, co, md), i, lo)
 
 	// Attach all messengers to the campaign manager.
 	for _, m := range msgrs {
@@ -707,14 +680,13 @@ func initTxTemplates(m *manager.Manager, co *core.Core) {
 }
 
 // initImporter initializes the bulk subscriber importer.
-func initImporter(q *models.Queries, db *sqlx.DB, core *core.Core, i *i18n.I18n, ko *koanf.Koanf) *subimporter.Importer {
+func initImporter(st lmstore.Store, core *core.Core, i *i18n.I18n, ko *koanf.Koanf) *subimporter.Importer {
 	return subimporter.New(
 		subimporter.Options{
-			DomainBlocklist:    ko.Strings("privacy.domain_blocklist"),
-			DomainAllowlist:    ko.Strings("privacy.domain_allowlist"),
-			UpsertStmt:         q.UpsertSubscriber.Stmt,
-			BlocklistStmt:      q.UpsertBlocklistSubscriber.Stmt,
-			UpdateListDateStmt: q.UpdateListsDate.Stmt,
+			DomainBlocklist: ko.Strings("privacy.domain_blocklist"),
+			DomainAllowlist: ko.Strings("privacy.domain_allowlist"),
+			Subscribers:     st.Subscribers(),
+			Lists:           st.Lists(),
 
 			// Hook for triggering admin notifications and refreshing stats materialized
 			// views after a successful import.
@@ -726,7 +698,7 @@ func initImporter(q *models.Queries, db *sqlx.DB, core *core.Core, i *i18n.I18n,
 				notifs.NotifySystem(subject, notifs.TplImport, data, nil)
 				return nil
 			},
-		}, db.DB, i)
+		}, i)
 }
 
 // initSMTPMessenger initializes the combined and individual SMTP messengers.
@@ -894,7 +866,7 @@ func initNotifs(fs stuffbin.FileSystem, i *i18n.I18n, em *email.Emailer, u *UrlC
 
 // initBounceManager initializes the bounce manager that scans mailboxes and listens to webhooks
 // for incoming bounce events.
-func initBounceManager(cb func(models.Bounce) error, stmt *sqlx.Stmt, lo *log.Logger, ko *koanf.Koanf) *bounce.Manager {
+func initBounceManager(cb func(models.Bounce) error, lo *log.Logger, ko *koanf.Koanf) *bounce.Manager {
 	opt := bounce.Opt{
 		WebhooksEnabled: ko.Bool("bounce.webhooks_enabled"),
 		SES: struct {
@@ -958,7 +930,7 @@ func initBounceManager(cb func(models.Bounce) error, stmt *sqlx.Stmt, lo *log.Lo
 	}
 
 	// Initialize the bounce manager.
-	b, err := bounce.New(opt, &bounce.Queries{RecordQuery: stmt}, lo)
+	b, err := bounce.New(opt, &bounce.Queries{}, lo)
 	if err != nil {
 		lo.Fatalf("error initializing bounce manager: %v", err)
 	}
@@ -967,7 +939,7 @@ func initBounceManager(cb func(models.Bounce) error, stmt *sqlx.Stmt, lo *log.Lo
 }
 
 // initAbout initializes the app's /about API endpoint with the app and system info.
-func initAbout(q *models.Queries, db *sqlx.DB) about {
+func initAbout(st lmstore.Store) about {
 	var (
 		mem runtime.MemStats
 	)
@@ -976,8 +948,10 @@ func initAbout(q *models.Queries, db *sqlx.DB) about {
 	runtime.ReadMemStats(&mem)
 
 	info := types.JSONText(`{}`)
-	if err := db.QueryRow(q.GetDBInfo).Scan(&info); err != nil {
+	if dbInfo, err := st.Schema().Info(context.Background()); err != nil {
 		lo.Printf("WARNING: error getting database version: %v", err)
+	} else if b, err := json.Marshal(dbInfo); err == nil {
+		info = b
 	}
 
 	hostname, err := os.Hostname()
@@ -1204,7 +1178,7 @@ func initCaptcha() *captcha.Captcha {
 }
 
 // initCron initializes cron jobs for slow query cache refresh and database vacuum.
-func initCron(co *core.Core, db *sqlx.DB) {
+func initCron(co *core.Core, st lmstore.Store) {
 	c := cron.New(cron.WithLogger(slog.New(slog.NewTextHandler(io.Discard, nil))))
 
 	// Slow query cache cron job.
@@ -1238,7 +1212,7 @@ func initCron(co *core.Core, db *sqlx.DB) {
 			schedule, err := parseCronString(intval)
 			if err == nil {
 				_, err = c.Schedule(schedule, func() {
-					RunDBVacuum(db, lo)
+					RunDBVacuum(st, lo)
 				})
 			}
 			if err != nil {
@@ -1440,7 +1414,7 @@ func initTplFuncs(i *i18n.I18n, u *UrlConfig) template.FuncMap {
 }
 
 // initAuth initializes the auth module with the given DB connection and
-func initAuth(co *core.Core, db *sql.DB, ko *koanf.Koanf) (bool, *auth.Auth) {
+func initAuth(co *core.Core, st lmstore.Store, ko *koanf.Koanf) (bool, *auth.Auth) {
 	var oidcCfg auth.OIDCConfig
 
 	// If OIDC is enabled, set up the OIDC config.
@@ -1481,7 +1455,7 @@ func initAuth(co *core.Core, db *sql.DB, ko *koanf.Koanf) (bool, *auth.Auth) {
 	a, err := auth.New(auth.Config{
 		OIDC:            oidcCfg,
 		SessionDuration: ko.Duration("security.session_duration"),
-	}, db, cb, lo)
+	}, st.Sessions(), cb, lo)
 	if err != nil {
 		lo.Fatalf("error initializing auth: %v", err)
 	}

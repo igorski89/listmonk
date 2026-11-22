@@ -9,7 +9,7 @@ package subimporter
 import (
 	"archive/zip"
 	"bytes"
-	"database/sql"
+	"context"
 	"encoding/csv"
 	"encoding/json"
 	"errors"
@@ -24,11 +24,10 @@ import (
 	"sync/atomic"
 	"unicode/utf8"
 
-	"github.com/gofrs/uuid/v5"
 	"github.com/knadh/listmonk/internal/i18n"
+	"github.com/knadh/listmonk/internal/store"
 	"github.com/knadh/listmonk/internal/utils"
 	"github.com/knadh/listmonk/models"
-	"github.com/lib/pq"
 	"golang.org/x/text/cases"
 	"golang.org/x/text/language"
 )
@@ -53,7 +52,6 @@ const (
 // Importer represents the bulk CSV subscriber import system.
 type Importer struct {
 	opt  Options
-	db   *sql.DB
 	i18n *i18n.I18n
 
 	domainBlocklist       map[string]struct{}
@@ -71,10 +69,10 @@ type Importer struct {
 
 // Options represents import options.
 type Options struct {
-	UpsertStmt         *sql.Stmt
-	BlocklistStmt      *sql.Stmt
-	UpdateListDateStmt *sql.Stmt
-	PostCB             func(subject string, data any) error
+	// Subscribers and Lists persist imported batches and touch the lists.
+	Subscribers store.SubscriberStore
+	Lists       store.ListStore
+	PostCB      func(subject string, data any) error
 
 	DomainBlocklist []string
 	DomainAllowlist []string
@@ -140,10 +138,9 @@ var (
 )
 
 // New returns a new instance of Importer.
-func New(opt Options, db *sql.DB, i *i18n.I18n) *Importer {
+func New(opt Options, i *i18n.I18n) *Importer {
 	im := Importer{
 		opt:             opt,
-		db:              db,
 		i18n:            i,
 		domainBlocklist: make(map[string]struct{}, len(opt.DomainBlocklist)),
 		domainAllowlist: make(map[string]struct{}, len(opt.DomainAllowlist)),
@@ -277,100 +274,68 @@ func (im *Importer) sendNotif(status string) error {
 // invoked as a goroutine.
 func (s *Session) Start() {
 	var (
-		tx    *sql.Tx
-		stmt  *sql.Stmt
-		err   error
+		ctx   = context.Background()
+		batch = make([]store.SubscriberInput, 0, commitBatchSize)
 		total = 0
 		cur   = 0
+		err   error
 	)
 
 	listIDs := make([]int, len(s.opt.ListIDs))
 	copy(listIDs, s.opt.ListIDs)
 
+	opt := store.ImportOptions{
+		Mode:               store.ImportSubscribe,
+		ListIDs:            listIDs,
+		SubscriptionStatus: s.opt.SubStatus,
+		OverwriteUserInfo:  s.opt.OverwriteUserInfo,
+		OverwriteSubStatus: s.opt.OverwriteSubStatus,
+		Permitted:          store.ListScope{All: true},
+	}
+	if s.opt.Mode == ModeBlocklist {
+		opt.Mode = store.ImportBlocklist
+	}
+
 	for sub := range s.subQueue {
-		if cur == 0 {
-			// New transaction batch.
-			tx, err = s.im.db.Begin()
-			if err != nil {
-				s.log.Printf("error creating DB transaction: %v", err)
-				continue
-			}
-
-			if s.opt.Mode == ModeSubscribe {
-				stmt = tx.Stmt(s.im.opt.UpsertStmt)
-			} else {
-				stmt = tx.Stmt(s.im.opt.BlocklistStmt)
-			}
-		}
-
-		uu, err := uuid.NewV4()
-		if err != nil {
-			s.log.Printf("error generating UUID: %v", err)
-			tx.Rollback()
-			break
-		}
-
-		if s.opt.Mode == ModeSubscribe {
-			_, err = stmt.Exec(uu, sub.Email, sub.Name, sub.Attribs, pq.Array(listIDs), s.opt.SubStatus, s.opt.OverwriteUserInfo, s.opt.OverwriteSubStatus)
-		} else if s.opt.Mode == ModeBlocklist {
-			_, err = stmt.Exec(uu, sub.Email, sub.Name, sub.Attribs)
-		}
-		if err != nil {
-			s.log.Printf("error executing insert: %v", err)
-			tx.Rollback()
-			break
-		}
+		batch = append(batch, store.SubscriberInput{Email: sub.Email, Name: sub.Name, Attribs: sub.Attribs})
 		cur++
 		total++
 
 		// Batch size is met. Commit.
 		if cur%commitBatchSize == 0 {
-			if err := tx.Commit(); err != nil {
-				tx.Rollback()
-				s.log.Printf("error committing to DB: %v", err)
-			} else {
-				s.im.incrementImportCount(cur)
-				s.log.Printf("imported %d", total)
+			if err = s.im.opt.Subscribers.Import(ctx, batch, opt); err != nil {
+				s.log.Printf("error executing insert: %v", err)
+				break
 			}
+			s.im.incrementImportCount(cur)
+			s.log.Printf("imported %d", total)
 
 			cur = 0
+			batch = batch[:0]
 		}
 	}
 
-	// On a failed load, rollback the pending db transaction.
-	if s.failed.Load() {
-		if tx != nil {
-			tx.Rollback()
-		}
+	// On a failed load, or a failed batch, stop.
+	if s.failed.Load() || err != nil {
 		s.im.setStatus(StatusFailed)
 		s.im.sendNotif(StatusFailed)
-		return
-	}
-
-	// Queue's closed and there's nothing left to commit.
-	if cur == 0 {
-		s.im.setStatus(StatusFinished)
-		s.log.Printf("imported finished")
-		if _, err := s.im.opt.UpdateListDateStmt.Exec(pq.Array(listIDs)); err != nil {
-			s.log.Printf("error updating lists date: %v", err)
-		}
-		s.im.sendNotif(StatusFinished)
 		return
 	}
 
 	// Queue's closed and there are records left to commit.
-	if err := tx.Commit(); err != nil {
-		tx.Rollback()
-		s.im.setStatus(StatusFailed)
-		s.log.Printf("error committing to DB: %v", err)
-		s.im.sendNotif(StatusFailed)
-		return
+	if cur > 0 {
+		if err := s.im.opt.Subscribers.Import(ctx, batch, opt); err != nil {
+			s.im.setStatus(StatusFailed)
+			s.log.Printf("error committing to DB: %v", err)
+			s.im.sendNotif(StatusFailed)
+			return
+		}
+		s.im.incrementImportCount(cur)
 	}
 
-	s.im.incrementImportCount(cur)
 	s.im.setStatus(StatusFinished)
 	s.log.Printf("imported finished")
-	if _, err := s.im.opt.UpdateListDateStmt.Exec(pq.Array(listIDs)); err != nil {
+	if err := s.im.opt.Lists.Touch(ctx, listIDs); err != nil {
 		s.log.Printf("error updating lists date: %v", err)
 	}
 

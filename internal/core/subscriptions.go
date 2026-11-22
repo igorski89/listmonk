@@ -4,15 +4,14 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/knadh/listmonk/internal/store"
 	"github.com/knadh/listmonk/models"
 	"github.com/labstack/echo/v5"
-	"github.com/lib/pq"
 )
 
 // GetSubscriptions retrieves the subscriptions for a subscriber.
 func (c *Core) GetSubscriptions(subID int, subUUID string, allLists bool) ([]models.Subscription, error) {
-	var out []models.Subscription
-	err := c.q.GetSubscriptions.Select(&out, subID, subUUID, allLists)
+	out, err := c.st.Subscriptions().List(bg, store.SubscriberRef{ID: subID, UUID: subUUID}, allLists)
 	if err != nil {
 		c.log.Printf("error getting subscriptions: %v", err)
 		return nil, echo.NewHTTPError(http.StatusInternalServerError,
@@ -24,7 +23,7 @@ func (c *Core) GetSubscriptions(subID int, subUUID string, allLists bool) ([]mod
 
 // AddSubscriptions adds list subscriptions to subscribers.
 func (c *Core) AddSubscriptions(subIDs, listIDs []int, status string) error {
-	if _, err := c.q.AddSubscribersToLists.Exec(pq.Array(subIDs), pq.Array(listIDs), status); err != nil {
+	if err := c.st.Subscriptions().Add(bg, subIDs, listIDs, status); err != nil {
 		c.log.Printf("error adding subscriptions: %v", err)
 		return echo.NewHTTPError(http.StatusInternalServerError,
 			c.i18n.Ts("globals.messages.errorUpdating", "name", "{globals.terms.subscribers}", "error", err.Error()))
@@ -40,7 +39,8 @@ func (c *Core) AddSubscriptionsByQuery(searchStr, queryExp string, sourceListIDs
 		sourceListIDs = []int{}
 	}
 
-	err := c.execSubQueryTpl(searchStr, queryExp, c.q.AddSubscribersToListsByQuery, sourceListIDs, subStatus, subscriberStatus, pq.Array(targetListIDs), status)
+	f := store.SubscriberFilter{Search: searchStr, Expr: queryExp, ListIDs: sourceListIDs, SubscriptionStatus: subStatus, Status: subscriberStatus}
+	_, err := c.st.Subscriptions().AddByFilter(bg, f, targetListIDs, status)
 	if err != nil {
 		c.log.Printf("error adding subscriptions by query: %v", err)
 		return echo.NewHTTPError(http.StatusInternalServerError,
@@ -52,7 +52,7 @@ func (c *Core) AddSubscriptionsByQuery(searchStr, queryExp string, sourceListIDs
 
 // DeleteSubscriptions delete list subscriptions from subscribers.
 func (c *Core) DeleteSubscriptions(subIDs, listIDs []int) error {
-	if _, err := c.q.DeleteSubscriptions.Exec(pq.Array(subIDs), pq.Array(listIDs)); err != nil {
+	if err := c.st.Subscriptions().Remove(bg, subIDs, listIDs); err != nil {
 		c.log.Printf("error deleting subscriptions: %v", err)
 		return echo.NewHTTPError(http.StatusInternalServerError,
 			c.i18n.Ts("globals.messages.errorUpdating", "name", "{globals.terms.subscribers}", "error", err.Error()))
@@ -69,7 +69,8 @@ func (c *Core) DeleteSubscriptionsByQuery(searchStr, queryExp string, sourceList
 		sourceListIDs = []int{}
 	}
 
-	err := c.execSubQueryTpl(searchStr, queryExp, c.q.DeleteSubscriptionsByQuery, sourceListIDs, subStatus, subscriberStatus, pq.Array(targetListIDs))
+	f := store.SubscriberFilter{Search: searchStr, Expr: queryExp, ListIDs: sourceListIDs, SubscriptionStatus: subStatus, Status: subscriberStatus}
+	_, err := c.st.Subscriptions().RemoveByFilter(bg, f, targetListIDs)
 	if err != nil {
 		c.log.Printf("error deleting subscriptions by query: %v", err)
 		return echo.NewHTTPError(http.StatusInternalServerError,
@@ -81,7 +82,7 @@ func (c *Core) DeleteSubscriptionsByQuery(searchStr, queryExp string, sourceList
 
 // UnsubscribeLists sets list subscriptions to 'unsubscribed'.
 func (c *Core) UnsubscribeLists(subIDs, listIDs []int, listUUIDs []string) error {
-	if _, err := c.q.UnsubscribeSubscribersFromLists.Exec(pq.Array(subIDs), pq.Array(listIDs), pq.StringArray(listUUIDs)); err != nil {
+	if err := c.st.Subscriptions().Unsubscribe(bg, subIDs, listIDs, listUUIDs); err != nil {
 		c.log.Printf("error unsubscribing from lists: %v", err)
 		return echo.NewHTTPError(http.StatusInternalServerError,
 			c.i18n.Ts("globals.messages.errorUpdating", "name", "{globals.terms.subscribers}", "error", err.Error()))
@@ -97,7 +98,8 @@ func (c *Core) UnsubscribeListsByQuery(searchStr, queryExp string, sourceListIDs
 		sourceListIDs = []int{}
 	}
 
-	err := c.execSubQueryTpl(searchStr, queryExp, c.q.UnsubscribeSubscribersFromListsByQuery, sourceListIDs, subStatus, subscriberStatus, pq.Array(targetListIDs))
+	f := store.SubscriberFilter{Search: searchStr, Expr: queryExp, ListIDs: sourceListIDs, SubscriptionStatus: subStatus, Status: subscriberStatus}
+	_, err := c.st.Subscriptions().UnsubscribeByFilter(bg, f, targetListIDs)
 	if err != nil {
 		c.log.Printf("error unsubscribing from lists by query: %v", err)
 		return echo.NewHTTPError(http.StatusInternalServerError,
@@ -110,13 +112,12 @@ func (c *Core) UnsubscribeListsByQuery(searchStr, queryExp string, sourceListIDs
 // DeleteUnconfirmedSubscriptions sets list subscriptions to 'unsubscribed' by a given arbitrary query expression.
 // sourceListIDs is the list of list IDs to filter the subscriber query with.
 func (c *Core) DeleteUnconfirmedSubscriptions(beforeDate time.Time) (int, error) {
-	res, err := c.q.DeleteUnconfirmedSubscriptions.Exec(beforeDate)
+	n, err := c.st.Subscriptions().DeleteUnconfirmed(bg, beforeDate)
 	if err != nil {
 		c.log.Printf("error deleting unconfirmed subscribers: %v", err)
 		return 0, echo.NewHTTPError(http.StatusInternalServerError,
 			c.i18n.Ts("globals.messages.errorDeleting", "name", "{globals.terms.subscribers}", "error", pqErrMsg(err)))
 	}
 
-	n, _ := res.RowsAffected()
-	return int(n), nil
+	return n, nil
 }

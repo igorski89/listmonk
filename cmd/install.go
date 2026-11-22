@@ -1,25 +1,25 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
 
-	"github.com/gofrs/uuid/v5"
-	"github.com/jmoiron/sqlx"
 	"github.com/knadh/listmonk/internal/auth"
 	"github.com/knadh/listmonk/internal/messenger/email"
+	lmstore "github.com/knadh/listmonk/internal/store"
+	"github.com/knadh/listmonk/internal/store/postgres"
 	"github.com/knadh/listmonk/internal/utils"
 	"github.com/knadh/listmonk/models"
 	"github.com/knadh/stuffbin"
-	"github.com/lib/pq"
 	null "gopkg.in/volatiletech/null.v6"
 )
 
 // install runs the first time setup of setting up the database.
-func install(lastVer string, db *sqlx.DB, fs stuffbin.FileSystem, prompt, idempotent bool) {
-	qMap := readQueries(queryFilePath, fs)
+func install(lastVer string, st *postgres.Store, fs stuffbin.FileSystem, prompt, idempotent bool) {
+	ctx := context.Background()
 
 	fmt.Println("")
 	if !idempotent {
@@ -45,37 +45,35 @@ func install(lastVer string, db *sqlx.DB, fs stuffbin.FileSystem, prompt, idempo
 
 	// If idempotence is on, check if the DB is already setup.
 	if idempotent {
-		if _, err := db.Exec("SELECT count(*) FROM settings"); err != nil {
-			// Treat missing "settings" table (42P01) as a fresh install.
-			// Abort on all other errors to not end up in a half-baked state.
-			if !isTableNotExistErr(err) {
-				lo.Fatalf("error checking existing DB schema: %v", err)
-			}
-		} else {
+		// A missing schema means a fresh install.
+		// Abort on all other errors to not end up in a half-baked state.
+		if ok, err := st.Schema().Installed(ctx); err != nil {
+			lo.Fatalf("error checking existing DB schema: %v", err)
+		} else if ok {
 			lo.Println("skipping install as database appears to be already setup")
 			os.Exit(0)
 		}
 	}
 
 	// Migrate the tables.
-	if err := installSchema(lastVer, db, fs); err != nil {
+	if err := st.Schema().Install(ctx, lastVer, lmstore.MigrationEnv{FS: fs, Config: ko, Log: lo}); err != nil {
 		lo.Fatalf("error migrating DB schema: %v", err)
 	}
 
 	// Load the queries.
-	q := prepareQueries(qMap, db, ko)
+	configureStore(st, ko)
 
 	// Sample list.
-	defList, optinList := installLists(q)
+	defList, optinList := installLists(st)
 
 	// Sample subscribers.
-	installSubs(defList, optinList, q)
+	installSubs(defList, optinList, st)
 
 	// Templates.
-	campTplID, archiveTplID := installTemplates(q)
+	campTplID, archiveTplID := installTemplates(st)
 
 	// Sample campaign.
-	installCampaign(campTplID, archiveTplID, q)
+	installCampaign(campTplID, archiveTplID, st)
 
 	// Setup admin user optionally.
 	var (
@@ -112,95 +110,84 @@ func install(lastVer string, db *sqlx.DB, fs stuffbin.FileSystem, prompt, idempo
 	}
 
 	if hasUser {
-		installUser(user, password, apiUser, q)
+		installUser(user, password, apiUser, st)
 	}
 
 	lo.Printf("setup complete")
 	lo.Printf(`run the program and access the dashboard at %s`, ko.MustString("app.address"))
 }
 
-// installSchema executes the SQL schema and creates the necessary tables and types.
-func installSchema(curVer string, db *sqlx.DB, fs stuffbin.FileSystem) error {
-	q, err := fs.Read("/schema.sql")
+func installLists(st lmstore.Store) (int, int) {
+	ctx := context.Background()
+	defList, err := st.Lists().Create(ctx, models.List{
+		Name:   "Default list",
+		Type:   models.ListTypePrivate,
+		Optin:  models.ListOptinSingle,
+		Status: models.ListStatusActive,
+		Tags:   []string{"test"},
+	})
 	if err != nil {
-		return err
-	}
-
-	if _, err := db.Exec(string(q)); err != nil {
-		return err
-	}
-
-	// Insert the current migration version.
-	return recordMigrationVersion(curVer, db)
-}
-
-func installLists(q *models.Queries) (int, int) {
-	var (
-		defList   int
-		optinList int
-	)
-	if err := q.CreateList.Get(&defList,
-		uuid.Must(uuid.NewV4()),
-		"Default list",
-		models.ListTypePrivate,
-		models.ListOptinSingle,
-		models.ListStatusActive,
-		pq.StringArray{"test"},
-		"",
-	); err != nil {
 		lo.Fatalf("error creating list: %v", err)
 	}
 
-	if err := q.CreateList.Get(&optinList, uuid.Must(uuid.NewV4()),
-		"Opt-in list",
-		models.ListTypePublic,
-		models.ListOptinDouble,
-		models.ListStatusActive,
-		pq.StringArray{"test"},
-		"",
-	); err != nil {
+	optinList, err := st.Lists().Create(ctx, models.List{
+		Name:   "Opt-in list",
+		Type:   models.ListTypePublic,
+		Optin:  models.ListOptinDouble,
+		Status: models.ListStatusActive,
+		Tags:   []string{"test"},
+	})
+	if err != nil {
 		lo.Fatalf("error creating list: %v", err)
 	}
 
-	return defList, optinList
+	return defList.ID, optinList.ID
 }
 
-func installSubs(defListID, optinListID int, q *models.Queries) {
+func installSubs(defListID, optinListID int, st lmstore.Store) {
+	ctx := context.Background()
+	opt := lmstore.ImportOptions{
+		Mode:               lmstore.ImportSubscribe,
+		SubscriptionStatus: models.SubscriptionStatusUnconfirmed,
+		OverwriteUserInfo:  true,
+		OverwriteSubStatus: true,
+		Permitted:          lmstore.ListScope{All: true},
+	}
+
 	// Sample subscriber.
-	if _, err := q.UpsertSubscriber.Exec(
-		uuid.Must(uuid.NewV4()),
-		"john@example.com",
-		"John Doe",
-		`{"type": "known", "good": true, "city": "Bengaluru"}`,
-		pq.Int64Array{int64(defListID)},
-		models.SubscriptionStatusUnconfirmed,
-		true, true); err != nil {
+	opt.ListIDs = []int{defListID}
+	if err := st.Subscribers().Import(ctx, []lmstore.SubscriberInput{{
+		Email:   "john@example.com",
+		Name:    "John Doe",
+		Attribs: models.JSON{"type": "known", "good": true, "city": "Bengaluru"},
+	}}, opt); err != nil {
 		lo.Fatalf("Error creating subscriber: %v", err)
 	}
-	if _, err := q.UpsertSubscriber.Exec(
-		uuid.Must(uuid.NewV4()),
-		"anon@example.com",
-		"Anon Doe",
-		`{"type": "unknown", "good": true, "city": "Bengaluru"}`,
-		pq.Int64Array{int64(optinListID)},
-		models.SubscriptionStatusUnconfirmed,
-		true, true); err != nil {
+
+	opt.ListIDs = []int{optinListID}
+	if err := st.Subscribers().Import(ctx, []lmstore.SubscriberInput{{
+		Email:   "anon@example.com",
+		Name:    "Anon Doe",
+		Attribs: models.JSON{"type": "unknown", "good": true, "city": "Bengaluru"},
+	}}, opt); err != nil {
 		lo.Fatalf("error creating subscriber: %v", err)
 	}
 }
 
-func installTemplates(q *models.Queries) (int, int) {
+func installTemplates(st lmstore.Store) (int, int) {
+	ctx := context.Background()
+
 	// Default campaign template.
 	campTpl, err := fs.Get("/static/email-templates/default.tpl")
 	if err != nil {
 		lo.Fatalf("error reading default e-mail template: %v", err)
 	}
 
-	var campTplID int
-	if err := q.CreateTemplate.Get(&campTplID, "Default campaign template", models.TemplateTypeCampaign, "", campTpl.ReadBytes(), nil); err != nil {
+	camp, err := st.Templates().Create(ctx, lmstore.TemplateInput{Name: "Default campaign template", Type: models.TemplateTypeCampaign, Body: string(campTpl.ReadBytes())})
+	if err != nil {
 		lo.Fatalf("error creating default campaign template: %v", err)
 	}
-	if _, err := q.SetDefaultTemplate.Exec(campTplID); err != nil {
+	if err := st.Templates().SetDefault(ctx, camp.ID); err != nil {
 		lo.Fatalf("error setting default template: %v", err)
 	}
 
@@ -210,8 +197,8 @@ func installTemplates(q *models.Queries) (int, int) {
 		lo.Fatalf("error reading default archive template: %v", err)
 	}
 
-	var archiveTplID int
-	if err := q.CreateTemplate.Get(&archiveTplID, "Default archive template", models.TemplateTypeCampaign, "", archiveTpl.ReadBytes(), nil); err != nil {
+	archive, err := st.Templates().Create(ctx, lmstore.TemplateInput{Name: "Default archive template", Type: models.TemplateTypeCampaign, Body: string(archiveTpl.ReadBytes())})
+	if err != nil {
 		lo.Fatalf("error creating default campaign template: %v", err)
 	}
 
@@ -221,7 +208,8 @@ func installTemplates(q *models.Queries) (int, int) {
 		lo.Fatalf("error reading default e-mail template: %v", err)
 	}
 
-	if _, err := q.CreateTemplate.Exec("Sample transactional template", models.TemplateTypeTx, "Welcome {{ .Subscriber.Name }}", txTpl.ReadBytes(), nil); err != nil {
+	if _, err := st.Templates().Create(ctx, lmstore.TemplateInput{Name: "Sample transactional template", Type: models.TemplateTypeTx,
+		Subject: "Welcome {{ .Subscriber.Name }}", Body: string(txTpl.ReadBytes())}); err != nil {
 		lo.Fatalf("error creating sample transactional template: %v", err)
 	}
 
@@ -235,21 +223,22 @@ func installTemplates(q *models.Queries) (int, int) {
 		lo.Fatalf("error reading default visual template json: %v", err)
 	}
 
-	if _, err := q.CreateTemplate.Exec("Sample visual template", models.TemplateTypeCampaignVisual, "", visualTpl.ReadBytes(), visualSrc.ReadBytes()); err != nil {
+	if _, err := st.Templates().Create(ctx, lmstore.TemplateInput{Name: "Sample visual template", Type: models.TemplateTypeCampaignVisual,
+		Body: string(visualTpl.ReadBytes()), BodySource: null.StringFrom(string(visualSrc.ReadBytes()))}); err != nil {
 		lo.Fatalf("error creating default campaign template: %v", err)
 	}
 
-	return campTplID, archiveTplID
+	return camp.ID, archive.ID
 }
 
-func installCampaign(campTplID, archiveTplID int, q *models.Queries) {
+func installCampaign(campTplID, archiveTplID int, st lmstore.Store) {
 	// Sample campaign.
-	if _, err := q.CreateCampaign.Exec(uuid.Must(uuid.NewV4()),
-		models.CampaignTypeRegular,
-		"Test campaign",
-		"Welcome to listmonk",
-		"No Reply <noreply@yoursite.com>",
-		`<h3>Hi {{ .Subscriber.FirstName }}!</h3>
+	if _, err := st.Campaigns().Create(context.Background(), models.Campaign{
+		Type:      models.CampaignTypeRegular,
+		Name:      "Test campaign",
+		Subject:   "Welcome to listmonk",
+		FromEmail: "No Reply <noreply@yoursite.com>",
+		Body: `<h3>Hi {{ .Subscriber.FirstName }}!</h3>
 		<p>This is a test e-mail campaign. Your second name is {{ .Subscriber.LastName }} and you are from {{ .Subscriber.Attribs.city }}.</p>
 		<p>Here is a <a href="https://listmonk.app@TrackLink">tracked link</a>.</p>
 		<p>Use the link icon in the editor toolbar or when writing raw HTML or Markdown,
@@ -257,34 +246,18 @@ func installCampaign(campTplID, archiveTplID int, q *models.Queries) {
 		<pre>&lt;a href=&quot;https:/&zwnj;/listmonk.app&#064;TrackLink&quot;&gt;&lt;/a&gt;</pre>
 		<p>For help, refer to the <a href="https://listmonk.app/docs">documentation</a>.</p>
 		`,
-		nil,
-		"richtext",
-		nil,
-		json.RawMessage("[]"),
-		json.RawMessage("{}"),
-		pq.StringArray{"test-campaign"},
-		email.MessengerName,
-		campTplID,
-		pq.Int64Array{1},
-		false,
-		"welcome-to-listmonk",
-		archiveTplID,
-		`{"name": "Subscriber"}`,
-		nil,
-		nil,
-	); err != nil {
+		ContentType:       "richtext",
+		Headers:           models.Headers{},
+		Attribs:           models.JSON{},
+		Tags:              []string{"test-campaign"},
+		Messenger:         email.MessengerName,
+		TemplateID:        null.IntFrom(campTplID),
+		ArchiveSlug:       null.StringFrom("welcome-to-listmonk"),
+		ArchiveTemplateID: null.IntFrom(archiveTplID),
+		ArchiveMeta:       json.RawMessage(`{"name": "Subscriber"}`),
+	}, []int{1}, nil); err != nil {
 		lo.Fatalf("error creating sample campaign: %v", err)
 	}
-
-}
-
-// recordMigrationVersion inserts the given version (of DB migration) into the
-// `migrations` array in the settings table.
-func recordMigrationVersion(ver string, db *sqlx.DB) error {
-	_, err := db.Exec(`INSERT INTO settings (key, value)
-					   VALUES('migrations', JSON_BUILD_ARRAY($1::TEXT))
-					   ON CONFLICT (key) DO UPDATE SET value = settings.value || EXCLUDED.value`, ver)
-	return err
 }
 
 func newConfigFile(path string) error {
@@ -303,18 +276,8 @@ func newConfigFile(path string) error {
 	return os.WriteFile(path, b, 0644)
 }
 
-// checkSchema checks if the DB schema is installed.
-func checkSchema(db *sqlx.DB) (bool, error) {
-	if _, err := db.Exec(`SELECT id FROM templates LIMIT 1`); err != nil {
-		if isTableNotExistErr(err) {
-			return false, nil
-		}
-		return false, err
-	}
-	return true, nil
-}
-
-func installUser(username, password, apiUsername string, q *models.Queries) {
+func installUser(username, password, apiUsername string, st lmstore.Store) {
+	ctx := context.Background()
 	consts := initConstConfig(ko)
 
 	// Super Admin role gets all permissions.
@@ -324,13 +287,14 @@ func installUser(username, password, apiUsername string, q *models.Queries) {
 	}
 
 	// Create the Super Admin role in the DB.
-	var role auth.Role
-	if err := q.CreateRole.Get(&role, "Super Admin", auth.RoleTypeUser, pq.Array(perms)); err != nil {
+	role, err := st.Roles().CreateUserRole(ctx, auth.Role{Name: null.StringFrom("Super Admin"), Permissions: perms})
+	if err != nil {
 		lo.Fatalf("error creating super admin role: %v", err)
 	}
 
 	// Create the admin user.
-	if _, err := q.CreateUser.Exec(username, true, password, username+"@listmonk", username, auth.RoleTypeUser, role.ID, nil, auth.UserStatusEnabled); err != nil {
+	if _, err := st.Users().Create(ctx, auth.User{Username: username, PasswordLogin: true, Password: null.StringFrom(password),
+		Email: null.StringFrom(username + "@listmonk"), Name: username, Type: auth.RoleTypeUser, UserRoleID: role.ID, Status: auth.UserStatusEnabled}); err != nil {
 		lo.Fatalf("error creating superadmin user: %v", err)
 	}
 
@@ -347,7 +311,8 @@ func installUser(username, password, apiUsername string, q *models.Queries) {
 			password = null.String{String: auth.HashAPIToken(tk), Valid: true}
 		)
 
-		if _, err := q.CreateUser.Exec(apiUsername, false, password, email, apiUsername, auth.UserTypeAPI, role.ID, nil, auth.UserStatusEnabled); err != nil {
+		if _, err := st.Users().Create(ctx, auth.User{Username: apiUsername, PasswordLogin: false, Password: password,
+			Email: email, Name: apiUsername, Type: auth.UserTypeAPI, UserRoleID: role.ID, Status: auth.UserStatusEnabled}); err != nil {
 			lo.Fatalf("error creating superadmin API user: %v", err)
 		}
 

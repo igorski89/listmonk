@@ -1,13 +1,14 @@
 package main
 
 import (
+	"context"
 	"encoding/csv"
 	"log"
 	"net/http"
 	"strconv"
 	"time"
 
-	"github.com/jmoiron/sqlx"
+	lmstore "github.com/knadh/listmonk/internal/store"
 	"github.com/knadh/listmonk/models"
 	"github.com/labstack/echo/v5"
 )
@@ -186,11 +187,12 @@ func (a *App) ExportCampaignAnalytics(c *echo.Context) error {
 	return nil
 }
 
-// RunDBVacuum runs a full VACUUM on the PostgreSQL database.
-// VACUUM reclaims storage occupied by dead tuples and updates planner statistics.
-func RunDBVacuum(db *sqlx.DB, lo *log.Logger) {
+// RunDBVacuum runs the database's maintenance (Postgres: a full VACUUM
+// ANALYZE, which reclaims storage occupied by dead tuples and updates
+// planner statistics).
+func RunDBVacuum(st lmstore.Store, lo *log.Logger) {
 	lo.Println("running database VACUUM ANALYZE")
-	if _, err := db.Exec("VACUUM ANALYZE"); err != nil {
+	if err := st.Schema().Optimize(context.Background()); err != nil {
 		lo.Printf("error running VACUUM ANALYZE: %v", err)
 		return
 	}

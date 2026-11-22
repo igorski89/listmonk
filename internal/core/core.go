@@ -5,26 +5,23 @@
 package core
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
 	"regexp"
 	"strings"
 
-	"github.com/jmoiron/sqlx"
 	"github.com/knadh/listmonk/internal/i18n"
+	"github.com/knadh/listmonk/internal/store"
 	"github.com/knadh/listmonk/internal/throttle"
 	"github.com/knadh/listmonk/models"
 	"github.com/labstack/echo/v5"
-	"github.com/lib/pq"
 )
 
-const (
-	matDashboardCharts = "mat_dashboard_charts"
-	matDashboardCounts = "mat_dashboard_counts"
-	matListCharts      = "mat_list_charts"
-	matListSubStats    = "mat_list_subscriber_stats"
-)
+// bg is the context for store calls until core's methods take one.
+var bg = context.Background()
 
 // Core represents the listmonk core with all shared, global functions.
 type Core struct {
@@ -33,8 +30,7 @@ type Core struct {
 	consts        Constants
 	optinThrottle *throttle.Throttle
 	i18n          *i18n.I18n
-	db            *sqlx.DB
-	q             *models.Queries
+	st            store.Store
 	log           *log.Logger
 }
 
@@ -57,8 +53,7 @@ type Hooks struct {
 type Opt struct {
 	Constants Constants
 	I18n      *i18n.I18n
-	DB        *sqlx.DB
-	Queries   *models.Queries
+	Store     store.Store
 	Log       *log.Logger
 }
 
@@ -83,74 +78,44 @@ func New(o *Opt, h *Hooks) *Core {
 		consts:        o.Constants,
 		optinThrottle: throttle.New(optinThrottleTTL, optinThrottleCap),
 		i18n:          o.I18n,
-		db:            o.DB,
-		q:             o.Queries,
+		st:            o.Store,
 		log:           o.Log,
 	}
 }
 
-// RefreshMatViews refreshes all materialized views.
+// RefreshMatViews refreshes all cached aggregates (Postgres: the
+// materialized views).
 func (c *Core) RefreshMatViews(concurrent bool) error {
-	for _, v := range []string{matDashboardCharts, matDashboardCounts, matListSubStats, matListCharts} {
-		_ = c.RefreshMatView(v, true)
-	}
-	return nil
+	return c.st.Stats().Refresh(bg)
 }
 
-// RefreshMatView refreshes a Postgres materialized view.
-func (c *Core) RefreshMatView(name string, concurrent bool) error {
-	q := "REFRESH MATERIALIZED VIEW %s %s"
-	if concurrent {
-		q = fmt.Sprintf(q, "CONCURRENTLY", name)
-	} else {
-		q = fmt.Sprintf(q, "", name)
-	}
-
-	if _, err := c.db.Exec(q); err != nil {
-		c.log.Printf("error refreshing materialized view: %s: %v", name, err)
-		return err
-	}
-
-	return nil
-}
-
-// refreshCache refreshes a Postgres materialized view if caching is disabled.
-func (c *Core) refreshCache(name string, concurrent bool) error {
-	if c.consts.CacheSlowQueries {
-		return nil
-	}
-
-	return c.RefreshMatView(name, concurrent)
-}
-
-// Given an error, pqErrMsg will try to return pq error details
-// if it's a pq error.
+// pqErrMsg returns a database error's message for admins: with the
+// database's extra detail if it has one (Postgres' DETAIL), or the
+// message of a rejected SQL expression.
 func pqErrMsg(err error) string {
-	if err, ok := err.(*pq.Error); ok {
-		if err.Detail != "" {
-			return fmt.Sprintf("%s. %s", err, err.Detail)
-		}
+	var ie *store.InvalidQueryError
+	if errors.As(err, &ie) {
+		return ie.Msg
+	}
+	var de *store.DBError
+	if errors.As(err, &de) && de.Detail != "" {
+		return fmt.Sprintf("%s. %s", de.Err, de.Detail)
 	}
 	return err.Error()
 }
 
-// makeSearchQuery cleans an optional search string and prepares the
-// query SQL statement (string interpolated) and returns the
-// search query string along with the SQL expression.
-func makeSearchQuery(searchStr, orderBy, order, query string, querySortFields []string) (string, string) {
-	searchStr = makeSearchString(searchStr)
-
-	// Sort params.
-	if !strSliceContains(orderBy, querySortFields) {
+// sortOf is makeSearchQuery's sort handling: the field if it's in the
+// whitelist, else created_at; desc unless asc is asked for.
+func sortOf(orderBy, order string, fields []string) store.Sort {
+	if !strSliceContains(orderBy, fields) {
 		orderBy = models.FieldCreatedAt
 	}
-	if order != models.OrderAsc && order != models.OrderDesc {
-		order = models.OrderDesc
-	}
+	return store.Sort{Field: orderBy, Desc: order != models.OrderAsc}
+}
 
-	query = strings.ReplaceAll(query, "%order%", orderBy+" "+order)
-
-	return searchStr, query
+// scopeOf turns upstream's (getAll, permittedIDs) pair into a ListScope.
+func scopeOf(getAll bool, permittedIDs []int) store.ListScope {
+	return store.ListScope{All: getAll, IDs: permittedIDs}
 }
 
 // makeSearchString normalizes a search string for use in SQL search queries.

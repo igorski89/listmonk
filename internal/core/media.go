@@ -1,46 +1,29 @@
 package core
 
 import (
-	"database/sql"
-	"fmt"
+	"errors"
 	"net/http"
-	"strings"
 
-	"github.com/gofrs/uuid/v5"
 	"github.com/knadh/listmonk/internal/media"
+	"github.com/knadh/listmonk/internal/store"
 	"github.com/knadh/listmonk/models"
 	"github.com/labstack/echo/v5"
-	"github.com/lib/pq"
 	"gopkg.in/volatiletech/null.v6"
 )
 
 // QueryMedia returns media entries optionally filtered by a query string.
 func (c *Core) QueryMedia(provider string, s media.Store, query string, tags []string, offset, limit int) ([]media.Media, int, error) {
-	out := []media.Media{}
-	if tags == nil {
-		tags = []string{}
-	}
-
-	if query != "" {
-		query = strings.ToLower(query)
-	}
-
-	if err := c.q.QueryMedia.Select(&out, fmt.Sprintf("%%%s%%", query), provider, offset, limit, pq.StringArray(tags)); err != nil {
+	out, total, err := c.st.Media().Query(bg, provider, query, tags, store.Page{Offset: offset, Limit: limit})
+	if err != nil {
 		return out, 0, echo.NewHTTPError(http.StatusInternalServerError,
 			c.i18n.Ts("globals.messages.errorFetching",
 				"name", "{globals.terms.media}", "error", pqErrMsg(err)))
 	}
 
-	total := 0
-	if len(out) > 0 {
-		total = out[0].Total
-
-		for i := 0; i < len(out); i++ {
-			out[i].URL = s.GetURL(out[i].Filename)
-
-			if out[i].Thumb != "" {
-				out[i].ThumbURL = null.String{Valid: true, String: s.GetURL(out[i].Thumb)}
-			}
+	for i := 0; i < len(out); i++ {
+		out[i].URL = s.GetURL(out[i].Filename)
+		if out[i].Thumb != "" {
+			out[i].ThumbURL = null.String{Valid: true, String: s.GetURL(out[i].Thumb)}
 		}
 	}
 
@@ -49,15 +32,10 @@ func (c *Core) QueryMedia(provider string, s media.Store, query string, tags []s
 
 // GetMedia returns a media item.
 func (c *Core) GetMedia(id int, uuid, fileName string, s media.Store) (media.Media, error) {
-	var uu any
-	if uuid != "" {
-		uu = uuid
-	}
-
-	var out media.Media
-	if err := c.q.GetMedia.Get(&out, id, uu, fileName); err != nil {
+	out, err := c.st.Media().Get(bg, store.MediaRef{ID: id, UUID: uuid, Filename: fileName})
+	if err != nil {
 		// If it's ` sql: no rows in result set`, return a 404.
-		if err == sql.ErrNoRows {
+		if errors.Is(err, store.ErrNotFound) {
 			return out, ErrNotFound
 		}
 
@@ -75,8 +53,8 @@ func (c *Core) GetMedia(id int, uuid, fileName string, s media.Store) (media.Med
 
 // GetMediaTags returns tags for the given provider.
 func (c *Core) GetMediaTags(provider string) ([]media.Tag, error) {
-	out := []media.Tag{}
-	if err := c.q.GetMediaTags.Select(&out, provider); err != nil {
+	out, err := c.st.Media().Tags(bg, provider)
+	if err != nil {
 		return nil, echo.NewHTTPError(http.StatusInternalServerError,
 			c.i18n.Ts("globals.messages.errorFetching", "name", "{globals.terms.tags}", "error", pqErrMsg(err)))
 	}
@@ -86,34 +64,25 @@ func (c *Core) GetMediaTags(provider string) ([]media.Tag, error) {
 
 // InsertMedia inserts a new media file into the DB.
 func (c *Core) InsertMedia(fileName, thumbName, contentType string, meta models.JSON, tags []string, provider string, s media.Store) (media.Media, error) {
-	uu, err := uuid.NewV4()
+	out, err := c.st.Media().Insert(bg, store.MediaInput{Filename: fileName, Thumb: thumbName, ContentType: contentType,
+		Provider: provider, Meta: meta, Tags: normalizeTags(tags)})
 	if err != nil {
-		c.log.Printf("error generating UUID: %v", err)
-		return media.Media{}, echo.NewHTTPError(http.StatusInternalServerError,
-			c.i18n.Ts("globals.messages.errorUUID", "error", err.Error()))
-	}
-
-	// Write to the DB.
-	var newID int
-	if err := c.q.InsertMedia.Get(&newID, uu, fileName, thumbName, contentType, provider, meta, pq.StringArray(normalizeTags(tags))); err != nil {
 		c.log.Printf("error inserting uploaded file to db: %v", err)
 		return media.Media{}, echo.NewHTTPError(http.StatusInternalServerError,
 			c.i18n.Ts("globals.messages.errorCreating", "name", "{globals.terms.media}", "error", pqErrMsg(err)))
 	}
 
-	return c.GetMedia(newID, "", "", s)
+	return c.GetMedia(out.ID, "", "", s)
 }
 
 // UpdateMedia updates a media item's tags.
 func (c *Core) UpdateMedia(id int, tags []string, s media.Store) (media.Media, error) {
-	res, err := c.q.UpdateMedia.Exec(id, pq.StringArray(normalizeTags(tags)))
-	if err != nil {
+	if _, err := c.st.Media().SetTags(bg, id, normalizeTags(tags)); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return media.Media{}, ErrNotFound
+		}
 		return media.Media{}, echo.NewHTTPError(http.StatusInternalServerError,
 			c.i18n.Ts("globals.messages.errorUpdating", "name", "{globals.terms.media}", "error", pqErrMsg(err)))
-	}
-
-	if n, _ := res.RowsAffected(); n == 0 {
-		return media.Media{}, ErrNotFound
 	}
 
 	return c.GetMedia(id, "", "", s)
@@ -121,8 +90,8 @@ func (c *Core) UpdateMedia(id int, tags []string, s media.Store) (media.Media, e
 
 // DeleteMedia deletes a given media item and returns the filename of the deleted item.
 func (c *Core) DeleteMedia(id int) (string, error) {
-	var fname string
-	if err := c.q.DeleteMedia.Get(&fname, id); err != nil {
+	fname, err := c.st.Media().Delete(bg, id)
+	if err != nil {
 		c.log.Printf("error inserting uploaded file to db: %v", err)
 		return "", echo.NewHTTPError(http.StatusInternalServerError,
 			c.i18n.Ts("globals.messages.errorCreating", "name", "{globals.terms.media}", "error", pqErrMsg(err)))

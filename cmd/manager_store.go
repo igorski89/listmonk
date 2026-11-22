@@ -1,34 +1,30 @@
 package main
 
 import (
-	"github.com/gofrs/uuid/v5"
+	"context"
+
 	"github.com/knadh/listmonk/internal/core"
 	"github.com/knadh/listmonk/internal/manager"
 	"github.com/knadh/listmonk/internal/media"
+	lmstore "github.com/knadh/listmonk/internal/store"
 	"github.com/knadh/listmonk/models"
-	"github.com/lib/pq"
 )
 
 // store implements DataSource over the primary
 // database.
 type store struct {
-	queries *models.Queries
-	core    *core.Core
-	media   media.Store
+	st    lmstore.Store
+	core  *core.Core
+	media media.Store
 }
 
-type runningCamp struct {
-	CampaignID      int    `db:"campaign_id"`
-	CampaignType    string `db:"campaign_type"`
-	MaxSubscriberID int    `db:"max_subscriber_id"`
-	ListID          int    `db:"list_id"`
-}
+var bg = context.Background()
 
-func newManagerStore(q *models.Queries, c *core.Core, m media.Store) *store {
+func newManagerStore(st lmstore.Store, c *core.Core, m media.Store) *store {
 	return &store{
-		queries: q,
-		core:    c,
-		media:   m,
+		st:    st,
+		core:  c,
+		media: m,
 	}
 }
 
@@ -36,9 +32,11 @@ func newManagerStore(q *models.Queries, c *core.Core, m media.Store) *store {
 // campaigns that are also being processed. It also persists sent counts and
 // resume checkpoints for campaigns being processed.
 func (s *store) NextCampaigns(currentIDs []int64, sentCounts []int64, lastSubIDs []int64) ([]*models.Campaign, error) {
-	var out []*models.Campaign
-	err := s.queries.NextCampaigns.Select(&out, pq.Int64Array(currentIDs), pq.Int64Array(sentCounts), pq.Int64Array(lastSubIDs))
-	return out, err
+	progress := make([]lmstore.CampaignProgress, len(currentIDs))
+	for i := range currentIDs {
+		progress[i] = lmstore.CampaignProgress{ID: int(currentIDs[i]), Sent: int(sentCounts[i]), LastSubID: int(lastSubIDs[i])}
+	}
+	return s.st.Campaigns().Next(bg, progress)
 }
 
 // NextSubscribers retrieves a subset of subscribers of a given campaign.
@@ -46,42 +44,28 @@ func (s *store) NextCampaigns(currentIDs []int64, sentCounts []int64, lastSubIDs
 // and every batch takes the last ID of the last batch and fetches the next
 // batch above that.
 func (s *store) NextSubscribers(campID, lastFetchedID, limit int) ([]models.Subscriber, error) {
-	var camps []runningCamp
-	if err := s.queries.GetRunningCampaign.Select(&camps, campID); err != nil {
-		return nil, err
-	}
-
-	var listIDs []int
-	for _, c := range camps {
-		listIDs = append(listIDs, c.ListID)
-	}
-
-	if len(listIDs) == 0 {
-		return nil, nil
-	}
-
-	var out []models.Subscriber
-	err := s.queries.NextCampaignSubscribers.Select(&out, camps[0].CampaignID, camps[0].CampaignType, lastFetchedID, camps[0].MaxSubscriberID, pq.Array(listIDs), limit)
-	return out, err
+	return s.st.Campaigns().NextSubscribers(bg, campID, lastFetchedID, limit)
 }
 
 // GetCampaign fetches a campaign from the database.
 func (s *store) GetCampaign(campID int) (*models.Campaign, error) {
-	var out = &models.Campaign{}
-	err := s.queries.GetCampaign.Get(out, campID, nil, nil, "default")
-	return out, err
+	out, err := s.st.Campaigns().Get(bg, lmstore.CampaignRef{ID: campID}, lmstore.TemplateCampaign)
+	return &out, err
 }
 
 // UpdateCampaignStatus updates a campaign's status.
 func (s *store) UpdateCampaignStatus(campID int, status string) error {
-	_, err := s.queries.UpdateCampaignStatus.Exec(campID, status)
+	err := s.st.Campaigns().SetStatus(bg, campID, status)
+	if err == lmstore.ErrNotFound {
+		// upstream ignored a missing campaign here.
+		return nil
+	}
 	return err
 }
 
 // UpdateCampaignCounts updates a campaign's status.
 func (s *store) UpdateCampaignCounts(campID int, toSend int, sent int, lastSubID int) error {
-	_, err := s.queries.UpdateCampaignCounts.Exec(campID, toSend, sent, lastSubID)
-	return err
+	return s.st.Campaigns().SetCounts(bg, campID, toSend, sent, lastSubID)
 }
 
 // GetAttachment fetches a media attachment blob.
@@ -139,47 +123,15 @@ func (s *store) GetMediaURLByFilename(filename string) (string, error) {
 
 // CreateLink registers a URL with a UUID for tracking clicks and returns the UUID.
 func (s *store) CreateLink(url string) (string, error) {
-	// Create a new UUID for the URL. If the URL already exists in the DB
-	// the UUID in the database is returned.
-	uu, err := uuid.NewV4()
-	if err != nil {
-		return "", err
-	}
-
-	var out string
-	if err := s.queries.CreateLink.Get(&out, uu, url); err != nil {
-		return "", err
-	}
-
-	return out, nil
-}
-
-// RecordBounce records a bounce event and returns the bounce count.
-func (s *store) RecordBounce(b models.Bounce) (int64, int, error) {
-	var res = struct {
-		SubscriberID int64 `db:"subscriber_id"`
-		Num          int   `db:"num"`
-	}{}
-
-	err := s.queries.UpdateCampaignStatus.Select(&res,
-		b.SubscriberUUID,
-		b.Email,
-		b.CampaignUUID,
-		b.Type,
-		b.Source,
-		b.Meta)
-
-	return res.SubscriberID, res.Num, err
+	return s.st.Tracking().CreateLink(bg, url)
 }
 
 // BlocklistSubscriber blocklists a subscriber permanently.
 func (s *store) BlocklistSubscriber(id int64) error {
-	_, err := s.queries.BlocklistSubscribers.Exec(pq.Int64Array{id})
-	return err
+	return s.st.Subscribers().Blocklist(bg, []int{int(id)})
 }
 
 // DeleteSubscriber deletes a subscriber from the DB.
 func (s *store) DeleteSubscriber(id int64) error {
-	_, err := s.queries.DeleteSubscribers.Exec(pq.Int64Array{id})
-	return err
+	return s.st.Subscribers().Delete(bg, []int{int(id)}, nil)
 }
