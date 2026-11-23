@@ -54,10 +54,12 @@ store interfaces -> parity harness -> Postgres store -> app on the store
 
 Not done / next:
 - Review of the deviations and SQLite differences below.
+- SGNL build: tag `v7.0.0-beta.2-sqlite.1` (74e3c328); the Dockerfile
+  lives in the SGNL repo (`docker/listmonk/Dockerfile`), built from the tag.
 - Deploy-side changes for SGNL need igor's go; nothing was changed on
   the server. They are:
   - the Kamal config;
-  - backup of the SQLite file (`VACUUM INTO`, see below);
+  - backup of the SQLite file (see below);
   - removing the Postgres accessory;
   - `bin/sgnl-listmonk-setup`, which writes the settings (root_url, OIDC,
     from_email, SMTP/SES, bounce.ses) by sending Postgres SQL to the
@@ -145,8 +147,11 @@ recipients 58 ms; fetching all 100k recipients in batches of 1000 4.4 s;
   (allowed tables and functions only); expressions containing `;` outside
   quotes are rejected.
 - Backups: with WAL, copying the `.db` file alone isn't a safe backup.
-  Use `sqlite3 listmonk.db "VACUUM INTO 'backup.db'"` (or checkpoint first);
-  the SGNL plan's "restic takes the file as is" needs that step.
+  Either `sqlite3 listmonk.db "VACUUM INTO 'backup.db'"`, or copy the `.db`
+  and `-wal` together while the container is paused (`docker pause`): that
+  copy is a crash image, which SQLite recovers (synchronous=NORMAL). Tested
+  2026-11-23: copy taken mid-write passes integrity_check and boots.
+  Restore both files together, with the container stopped.
 - Migrations: SQLite starts from a baseline at upstream v7.0.0; each later
   upstream migration needs an SQLite twin in `internal/store/sqlite`.
 
