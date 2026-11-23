@@ -17,11 +17,12 @@ history: SGNL `instance/docs/PLAN-listmonk-sqlite.md`.
   and Postgres 18, frontend build) on every push and PR. Upstream's
   workflows and goreleaser configs are removed.
 - Releases: push a tag `vX.Y.Z-(beta|rc).N-sqlite.M` on `master`.
-  `fork-release.yml` runs the tests, builds the root `Dockerfile` (amd64,
-  from the checkout), runs `scripts/fork-upgrade-test.sh` from the
-  previous release's image (SQLite: install, data, upgrade, integrity,
-  ledger equal to a fresh install), then pushes
-  `ghcr.io/igorski89/listmonk:<tag>` and creates a GitHub pre-release.
+  `fork-release.yml` runs the tests, builds the root `Dockerfile` (from
+  the checkout) for amd64 and arm64, runs `scripts/fork-upgrade-test.sh`
+  from the previous release's image to each (SQLite: install, data,
+  upgrade, integrity, ledger equal to a fresh install; arm64 emulated),
+  then pushes the multi-arch `ghcr.io/igorski89/listmonk:<tag>` and
+  creates a GitHub pre-release. (`-sqlite.5` was amd64 only.)
   Other tag names are refused: a final version would refuse to boot with
   pending migrations. Run it by hand (dry run) to test without publishing.
 

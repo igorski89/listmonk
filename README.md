@@ -48,7 +48,7 @@ project. Please report problems with this fork here, not upstream.
   Postgres databases are repaired automatically on upgrade.
 - **Releases.** Tags look like `v7.0.0-beta.2-sqlite.5`: the upstream
   version the fork is based on, then a fork release number. Images are
-  linux/amd64 only and published to GHCR. The fork publishes no binaries
+  published to GHCR for linux/amd64 and linux/arm64. The fork publishes no binaries
   and no Docker Hub images.
 
 [FORK.md](FORK.md) has the details: the design, test results, every known

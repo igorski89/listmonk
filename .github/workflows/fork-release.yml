@@ -69,6 +69,10 @@ jobs:
           echo "IMAGE=$image" >> "$GITHUB_ENV"
           echo "$tag (commit $(git rev-parse --short HEAD)), upgrading from $prev"
 
+      - uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
       - uses: docker/setup-buildx-action@v3
 
       - uses: docker/login-action@v3
@@ -84,13 +88,27 @@ jobs:
           platforms: linux/amd64
           load: true
           tags: ${{ env.IMAGE }}:${{ env.TAG }}
-          build-args: |
+          build-args: &build-args |
             LISTMONK_VERSION=${{ env.TAG }}
             COMMIT=${{ env.COMMIT }}
-          labels: |
+          labels: &labels |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.version=${{ env.TAG }}
             org.opencontainers.image.revision=${{ env.COMMIT }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # Only the runtime stage's apk install runs emulated: the frontend is
+      # built and the Go binary cross-compiled on the runner.
+      - name: Build arm64
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/arm64
+          load: true
+          tags: listmonk-arm64:${{ env.TAG }}
+          build-args: *build-args
+          labels: *labels
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -110,12 +128,26 @@ jobs:
             --cache-from type=gha "$RUNNER_TEMP/prev"
           echo "OLD=listmonk-prev:$PREV" >> "$GITHUB_ENV"
 
-      - name: Upgrade test
+      - name: Upgrade test (amd64)
         run: scripts/fork-upgrade-test.sh "$OLD" "$IMAGE:$TAG"
 
+      # Upgrades the previous release's (amd64) data with the arm64 image,
+      # emulated: the SQLite file is the same on both.
+      - name: Upgrade test (arm64)
+        run: scripts/fork-upgrade-test.sh "$OLD" "listmonk-arm64:$TAG"
+
+      # Rebuilds both platforms from the cache of the tested builds.
       - name: Publish image
         if: env.PUBLISH == 'true'
-        run: docker push "$IMAGE:$TAG"
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ env.IMAGE }}:${{ env.TAG }}
+          build-args: *build-args
+          labels: *labels
+          cache-from: type=gha
 
       - name: GitHub release
         if: env.PUBLISH == 'true'
@@ -123,7 +155,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           {
-            echo "Image: \`$IMAGE:$TAG\` (linux/amd64)"
+            echo "Image: \`$IMAGE:$TAG\` (linux/amd64, linux/arm64)"
             echo
             echo "Changes since $PREV:"
             echo

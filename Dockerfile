@@ -28,8 +28,8 @@ RUN rm -rf node_modules dist && bun install --frozen-lockfile && bun run build
 FROM --platform=$BUILDPLATFORM golang:1.27.3-alpine AS build
 ARG LISTMONK_VERSION
 ARG COMMIT
-ARG TARGETOS=linux
-ARG TARGETARCH=amd64
+ARG TARGETOS
+ARG TARGETARCH
 RUN go install github.com/knadh/stuffbin/stuffbin@v1.3.0
 WORKDIR /src
 COPY go.mod go.sum ./
