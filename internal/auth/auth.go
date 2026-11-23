@@ -56,6 +56,7 @@ type Config struct {
 	OIDC            OIDCConfig
 	BasicAuth       BasicAuthConfig
 	SessionDuration time.Duration
+	APIJWT          APIJWTConfig
 }
 
 // Callbacks takes two callback functions required by simplesessions.
@@ -63,6 +64,10 @@ type Callbacks struct {
 	SetCookie func(cookie *http.Cookie, w any) error
 	GetCookie func(name string, r any) (*http.Cookie, error)
 	GetUser   func(id int) (User, error)
+
+	// GetUserByEmail is needed with APIJWT. It returns an *echo.HTTPError
+	// with 404 for an unknown e-mail.
+	GetUserByEmail func(email string) (User, error)
 }
 
 type Auth struct {
@@ -80,6 +85,9 @@ type Auth struct {
 
 	// Whether the OIDC provider supports PKCE with the S256 challenge method.
 	pkce bool
+
+	// Bearer access tokens on the API (APIMiddleware); nil if not enabled.
+	jwt *jwtAuth
 }
 
 var sessPruneInterval = time.Hour * 12
@@ -103,6 +111,16 @@ func New(cfg Config, st SessionStore, cb *Callbacks, lo *log.Logger) (*Auth, err
 		log: lo,
 
 		apiUsers: map[string]User{},
+	}
+
+	if err := cfg.APIJWT.Validate(); err != nil {
+		return nil, err
+	}
+	if cfg.APIJWT.Enabled {
+		if cb.GetUserByEmail == nil {
+			return nil, errors.New("api_jwt: no GetUserByEmail callback")
+		}
+		a.jwt = &jwtAuth{cfg: cfg.APIJWT}
 	}
 
 	// Initialize session manager.
@@ -356,9 +374,33 @@ func (o *Auth) ExchangeOIDCToken(code, nonce, codeVerifier string) (string, OIDC
 // sets the authenticated User{} on the echo context on the key UserKey. On failure, it sets an Error{}
 // instead on the same key.
 func (o *Auth) Middleware(next echo.HandlerFunc) echo.HandlerFunc {
+	return o.middleware(next, false)
+}
+
+// APIMiddleware is Middleware that also accepts bearer access tokens
+// (APIJWTConfig), if they're enabled. For the /api routes.
+func (o *Auth) APIMiddleware(next echo.HandlerFunc) echo.HandlerFunc {
+	return o.middleware(next, o.jwt != nil)
+}
+
+func (o *Auth) middleware(next echo.HandlerFunc, bearer bool) echo.HandlerFunc {
 	return func(c *echo.Context) error {
 		// It's an `Authorization` header request.
 		hdr := strings.TrimSpace(c.Request().Header.Get("Authorization"))
+
+		// A bearer token is used, or refused, before anything else: a failed
+		// one never falls back to a cookie session.
+		if bearer {
+			if raw, ok := bearerToken(hdr); ok {
+				user, err := o.authBearer(c, raw)
+				if err != nil {
+					c.Set(UserHTTPCtxKey, err)
+				} else {
+					c.Set(UserHTTPCtxKey, user)
+				}
+				return next(c)
+			}
+		}
 
 		// If cookie is set, ignore BasicAuth. This is to preserve backwards compatibility
 		// in v3 -> v4 upgrade where the user browser sessions would still have old

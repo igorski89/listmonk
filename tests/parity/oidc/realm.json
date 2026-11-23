@@ -23,6 +23,38 @@
       "config": {"claim.name": "groups", "full.path": "false", "id.token.claim": "true",
                  "access.token.claim": "true", "userinfo.token.claim": "true"}
     }]
+  }, {
+    "clientId": "sgnl-mcp",
+    "enabled": true,
+    "protocol": "openid-connect",
+    "publicClient": false,
+    "clientAuthenticatorType": "client-secret",
+    "secret": "mcp-secret",
+    "standardFlowEnabled": false,
+    "directAccessGrantsEnabled": true,
+    "attributes": {"standard.token.exchange.enabled": "true"},
+    "protocolMappers": [{
+      "name": "listmonk-audience",
+      "protocol": "openid-connect",
+      "protocolMapper": "oidc-audience-mapper",
+      "config": {"included.client.audience": "listmonk", "access.token.claim": "true", "id.token.claim": "false"}
+    }]
+  }, {
+    "clientId": "other-client",
+    "enabled": true,
+    "protocol": "openid-connect",
+    "publicClient": false,
+    "clientAuthenticatorType": "client-secret",
+    "secret": "other-secret",
+    "standardFlowEnabled": false,
+    "directAccessGrantsEnabled": true,
+    "attributes": {"standard.token.exchange.enabled": "true"},
+    "protocolMappers": [{
+      "name": "listmonk-audience",
+      "protocol": "openid-connect",
+      "protocolMapper": "oidc-audience-mapper",
+      "config": {"included.client.audience": "listmonk", "access.token.claim": "true", "id.token.claim": "false"}
+    }]
   }],
   "users": [
     {"username": "alice", "email": "alice@example.com", "emailVerified": true, "enabled": true,
@@ -42,6 +74,9 @@
      "credentials": [{"type": "password", "value": "evepass", "temporary": false}]},
     {"username": "frank", "email": "frank@example.com", "emailVerified": true, "enabled": true,
      "firstName": "Frank", "lastName": "Koe", "groups": [],
-     "credentials": [{"type": "password", "value": "frankpass", "temporary": false}]}
+     "credentials": [{"type": "password", "value": "frankpass", "temporary": false}]},
+    {"username": "gina", "email": "gina@example.com", "emailVerified": true, "enabled": true,
+     "firstName": "Gina", "lastName": "Hoe", "groups": [],
+     "credentials": [{"type": "password", "value": "ginapass", "temporary": false}]}
   ]
 }

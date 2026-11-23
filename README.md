@@ -42,6 +42,11 @@ project. Please report problems with this fork here, not upstream.
 - **OIDC auto-login** (`security.oidc.auto_login`). The login page sends
   the user straight to the identity provider. `/admin/login?password`
   still offers password login, as a break-glass route.
+- **API access with identity-provider tokens** (`[api_jwt]`, off by
+  default). A gateway can call the API with a user's OAuth access token
+  (`Authorization: Bearer`, for example from Keycloak token exchange) and
+  act as that listmonk user, with that user's own permissions. It needs
+  no admin API key.
 - **Bug fixes.** For example, deleting a list role no longer deletes the
   users who have it (upstream
   [#3375](https://github.com/knadh/listmonk/issues/3375)). Existing

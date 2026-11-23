@@ -58,6 +58,11 @@ else
 	psql <"$HERE/settings.sql" >/dev/null
 fi
 
+# OIDC_API_JWT=1 (fork only): accept bearer tokens from the test realm.
+if [ "${OIDC_API_JWT:-}" = 1 ]; then
+	export LISTMONK_api_jwt__enabled=true LISTMONK_api_jwt__issuer=http://127.0.0.1:58080/realms/parity \
+		LISTMONK_api_jwt__audiences=listmonk LISTMONK_api_jwt__clients=sgnl-mcp
+fi
 "$BIN" --config "$HERE/config.toml" >"$OUT/server.log" 2>&1 &
 PID=$!
 trap 'kill $PID 2>/dev/null || true' EXIT

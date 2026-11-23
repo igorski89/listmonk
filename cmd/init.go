@@ -1471,6 +1471,35 @@ func initTplFuncs(i *i18n.I18n, u *UrlConfig) template.FuncMap {
 }
 
 // initAuth initializes the auth module with the given DB connection and
+// initAPIJWT reads [api_jwt] (bearer access tokens on the API). It comes
+// from the config file and environment only: the settings in the database
+// are a different namespace and can't add keys. Lists can also be given as
+// comma or space separated strings (for the environment).
+func initAPIJWT(ko *koanf.Koanf) auth.APIJWTConfig {
+	list := func(key string) []string {
+		var out []string
+		vals := ko.Strings(key)
+		if len(vals) == 0 {
+			// Environment variables are plain strings.
+			vals = []string{ko.String(key)}
+		}
+		for _, v := range vals {
+			out = append(out, strings.FieldsFunc(v, func(r rune) bool { return r == ',' || r == ' ' })...)
+		}
+		return out
+	}
+	cfg := auth.APIJWTConfig{
+		Enabled:   ko.Bool("api_jwt.enabled"),
+		Issuer:    strings.TrimSpace(ko.String("api_jwt.issuer")),
+		Audiences: list("api_jwt.audiences"),
+		Clients:   list("api_jwt.clients"),
+	}
+	if cfg.Enabled {
+		lo.Printf("API accepts bearer access tokens from %s (audiences %v, clients %v)", cfg.Issuer, cfg.Audiences, cfg.Clients)
+	}
+	return cfg
+}
+
 func initAuth(co *core.Core, st lmstore.Store, ko *koanf.Koanf) (bool, *auth.Auth) {
 	var oidcCfg auth.OIDCConfig
 
@@ -1506,12 +1535,16 @@ func initAuth(co *core.Core, st lmstore.Store, ko *koanf.Koanf) (bool, *auth.Aut
 		GetUser: func(id int) (auth.User, error) {
 			return co.GetUser(id, "", "")
 		},
+		GetUserByEmail: func(email string) (auth.User, error) {
+			return co.GetUser(0, "", email)
+		},
 	}
 
 	// Initiaize the auth module.
 	a, err := auth.New(auth.Config{
 		OIDC:            oidcCfg,
 		SessionDuration: ko.Duration("security.session_duration"),
+		APIJWT:          initAPIJWT(ko),
 	}, st.Sessions(), cb, lo)
 	if err != nil {
 		lo.Fatalf("error initializing auth: %v", err)

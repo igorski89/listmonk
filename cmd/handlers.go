@@ -127,7 +127,7 @@ func initHTTPHandlers(e *echo.Echo, a *App) {
 			pm = a.auth.Perm
 
 			// Attach a middleware to the group that checks for auth.
-			g = e.Group("", a.auth.Middleware, func(next echo.HandlerFunc) echo.HandlerFunc {
+			g = e.Group("", a.auth.APIMiddleware, func(next echo.HandlerFunc) echo.HandlerFunc {
 				return func(c *echo.Context) error {
 					u := c.Get(auth.UserHTTPCtxKey)
 

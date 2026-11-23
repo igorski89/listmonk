@@ -182,6 +182,49 @@ recipients 58 ms; fetching all 100k recipients in batches of 1000 4.4 s;
 
 ### Features added in the fork
 
+- API bearer access tokens: `[api_jwt]` in the config file (or
+  `LISTMONK_api_jwt__*`; lists as comma-separated strings). Off by
+  default. For a gateway that acts for a logged-in person (SGNL's MCP
+  gateway, `sgnl-mcp`): `Authorization: Bearer <JWT>` on `/api/*` only.
+  - Accepted: an access token from `issuer` (discovery and JWKS, fetched on
+    first use, keys refetched on rotation), RS256 or ES256, not expired or
+    before `nbf`, `aud` containing one of `audiences`, issued to one of
+    `clients` (`client_id`, RFC 9068, else `azp`), with `email` and
+    `email_verified: true`.
+  - Access tokens only: the JWT header `typ: at+jwt` (RFC 9068; Authelia's
+    JWT access tokens) or Keycloak's `typ: "Bearer"` claim. ID and refresh
+    tokens are refused.
+  - It acts as the existing listmonk user with that e-mail, lowercased as
+    for OIDC login: type `user` and enabled. The user's own role and list
+    permissions apply; a super admin's token is super admin. Users aren't
+    created. listmonk's 2FA isn't asked for; the identity provider's login
+    applies. Each request reads the user from the database, like sessions.
+  - Responses: an unusable token gets 401 with
+    `WWW-Authenticate: Bearer error="invalid_token"` (get a new token); a
+    valid token for an unknown, disabled or API user gets 403; an
+    unreachable provider gets 503. The reason is in listmonk's log. A bad
+    bearer token never falls back to the session cookie.
+  - The settings in the database can't set it: they are another namespace,
+    and settings updates only change keys that exist. `issuer`, `audiences`
+    and `clients` are required when it's on (listmonk won't start without
+    them); there's no fallback to the OIDC login's provider URL, which the
+    settings page can change.
+  - `POST /api/logout` without a session (API or bearer token) now answers
+    400 instead of failing on the missing session.
+  - Tests: `internal/auth/jwt_test.go` (local provider: valid tokens,
+    Keycloak and RFC 9068 shapes, ES256, key rotation, every refusal
+    including alg none, HS256 with the public key, a forged key with the
+    same kid, provider down). Harness: `OIDC=1 OIDC_API_JWT=1 run.sh`
+    exchanges real Keycloak tokens (RFC 8693, client `sgnl-mcp` with an
+    audience mapper for `listmonk`; realm in `oidc/realm.json`) and checks
+    permissions and refusals on both backends.
+  - Keycloak: token exchange is enabled per requesting client
+    (`standard.token.exchange.enabled`), and an `oidc-audience-mapper`
+    puts `listmonk` in `aud`. Authelia (SGNL's fork) issues JWT access
+    tokens per client (`access_token_signed_response_alg`); e-mail claims
+    need the client's claims policy (`access_token: [email,
+    email_verified, ...]`). It has no token exchange yet.
+
 - OIDC auto-login: `security.oidc.auto_login` (bool, default false; toggle
   "Skip the login page" in Settings -> Security). When OIDC is enabled and
   it's on, `GET /admin/login` does what the login page's OIDC button does

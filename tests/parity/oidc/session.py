@@ -390,5 +390,65 @@ if os.environ.get("OIDC_AUTOLOGIN") == "1":
     record("auto-6-off", "GET", "/admin/login", 200, "ok")
     print("oidc auto-login: all checks passed")
 
+# ---------------------------------------------------------------- API bearer tokens (fork only)
+# Self-checking, like auto-login: runs only with OIDC_API_JWT=1 (run.sh then
+# starts listmonk with [api_jwt] for this realm, audience listmonk, client
+# sgnl-mcp). The gateway's flow: a user's token, exchanged (RFC 8693) for
+# one with aud listmonk, sent as Authorization: Bearer.
+if os.environ.get("OIDC_API_JWT") == "1":
+    TOK = REALM + "/protocol/openid-connect/token"
+
+    def exchanged(client, secret, user, password):
+        s, sub, _ = req("POST", TOK, form={"grant_type": "password", "client_id": client, "client_secret": secret,
+                                            "username": user, "password": password, "scope": "openid email profile"})
+        assert s == 200, (s, sub)
+        s, x, _ = req("POST", TOK, form={"grant_type": "urn:ietf:params:oauth:grant-type:token-exchange",
+                                          "client_id": client, "client_secret": secret,
+                                          "subject_token": sub["access_token"],
+                                          "subject_token_type": "urn:ietf:params:oauth:token-type:access_token",
+                                          "audience": "listmonk"})
+        assert s == 200, (s, x)
+        return x["access_token"], sub["id_token"]
+
+    def bearer(method, path, tok):
+        s, body, _ = req(method, BASE + path, auth="Bearer " + tok)
+        return s, body
+
+    mcp = ("sgnl-mcp", "mcp-secret")
+    tok, id_tok = exchanged(*mcp, "alice", "alicepass")
+    s, p = bearer("GET", "/api/profile", tok)
+    assert s == 200 and p["data"]["username"] == "alice", (s, p)
+    s, p = bearer("GET", "/api/lists?minimal=true&per_page=all", tok)
+    assert s == 200, (s, p)
+    # Alice's role (OIDC editors) can't read settings or users.
+    for path in ("/api/settings", "/api/users"):
+        s, p = bearer("GET", path, tok)
+        assert s == 403, (path, s, p)
+    # No session to end.
+    s, p = bearer("POST", "/api/logout", tok)
+    assert s == 400, (s, p)
+    s, p = bearer("GET", "/api/profile", tok)
+    assert s == 200, (s, p)
+
+    # Bob's Keycloak e-mail is mixed case.
+    s, p = bearer("GET", "/api/profile", exchanged(*mcp, "bob", "bobpass")[0])
+    assert s == 200 and p["data"]["email"] == "bob@example.com", (s, p)
+
+    refused = {
+        "id-token": (id_tok, 401),
+        "other-client": (exchanged("other-client", "other-secret", "alice", "alicepass")[0], 401),
+        "unverified-email": (exchanged(*mcp, "eve", "evepass")[0], 401),
+        "disabled-user": (exchanged(*mcp, "dave", "davepass")[0], 403),
+        "unknown-user": (exchanged(*mcp, "gina", "ginapass")[0], 403),
+        "tampered": (tok[:-4] + ("AAAA" if not tok.endswith("AAAA") else "BBBB"), 401),
+    }
+    for name, (t, want) in refused.items():
+        s, p = bearer("GET", "/api/profile", t)
+        assert s == want, (name, s, p)
+    # API tokens and sessions still work.
+    s, p = api("", "GET", "/api/profile", rec=False)
+    assert s == 200, (s, p)
+    print("api bearer tokens: all checks passed")
+
 # Leave OIDC off so the final database dump is the same shape as without it.
 set_oidc("settings-oidc-off", enabled=False)

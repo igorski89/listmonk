@@ -172,7 +172,11 @@ func (a *App) TwofaPage(c *echo.Context) error {
 
 // Logout logs a user out.
 func (a *App) Logout(c *echo.Context) error {
-	sess := c.Get(auth.SessionKey).(*simplesessions.Session)
+	// API tokens and bearer tokens have no session to end.
+	sess, ok := c.Get(auth.SessionKey).(*simplesessions.Session)
+	if !ok {
+		return echo.NewHTTPError(http.StatusBadRequest, "no login session")
+	}
 	token, err := sess.String(sess.Get("oidc_token"))
 	if err != nil {
 		a.log.Printf("error reading OIDC session token: %v", err)
