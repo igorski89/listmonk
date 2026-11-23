@@ -182,6 +182,12 @@ CREATE INDEX idx_clicks_sub_id ON link_clicks(subscriber_id);
 CREATE INDEX idx_clicks_date ON link_clicks(created_at);
 
 -- settings
+-- Fork: SQLite migration steps applied (internal/store/sqlite/migrations.go).
+CREATE TABLE schema_migrations (
+    name        TEXT NOT NULL PRIMARY KEY,
+    applied_at  TIMESTAMP NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f+00:00', 'now'))
+);
+
 CREATE TABLE settings (
     key             TEXT NOT NULL PRIMARY KEY,
     value           TEXT NOT NULL DEFAULT '{}',

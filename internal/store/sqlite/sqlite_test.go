@@ -165,7 +165,7 @@ func TestSchemaDrift(t *testing.T) {
 	}
 	rows.Close()
 	for _, tb := range liteTables {
-		if pgCols[tb] == nil {
+		if pgCols[tb] == nil && tb != "schema_migrations" { // the fork's SQLite step ledger
 			t.Errorf("table %s only in SQLite", tb)
 		}
 	}

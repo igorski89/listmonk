@@ -3,27 +3,42 @@ package sqlite
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/jmoiron/sqlx"
+	"github.com/knadh/listmonk/internal/store"
 )
 
-// fixup is a fork-only schema repair. Unlike a Migration it isn't tied to
-// an upstream version: needed inspects the schema, so a fixup runs once
-// wherever it applies (any recorded version, beta builds that don't record
-// versions) and is a no-op after, or if upstream ships the same change.
-type fixup struct {
-	Name   string
-	needed func(ctx context.Context, q sqlx.QueryerContext) (bool, error)
-	apply  func(ctx context.Context, tx *sqlx.Tx) error
+// Step is one SQLite schema migration. SQLite databases don't follow
+// upstream's version chain: they started from a baseline (schema.sql),
+// and upstream kept changing its v7.0.0 migration after that baseline, so
+// a version number can't say what a database has. Instead each step has a
+// name, recorded in the schema_migrations table when it has run.
+//
+// Steps are append-only: never rename, reorder or change one that has been
+// tagged; add a new one. schema.sql is always the result of all of them,
+// so Install records them all as applied. A step must also be safe on a
+// database where its change was made some other way (an earlier fixup,
+// a hand fix): check, then change.
+type Step struct {
+	Name string
+	Fn   func(ctx context.Context, tx *sqlx.Tx, env store.MigrationEnv) error
 }
 
-var fixups = []fixup{
+var steps = []Step{
 	{
 		// Upstream declares users.list_role_id ON DELETE CASCADE, so deleting
-		// a list role deleted its users (knadh/listmonk#3375).
-		Name:   "fork: users.list_role_id ON DELETE SET NULL",
-		needed: listRoleCascades,
-		apply:  rebuildUsers,
+		// a list role deleted its users (knadh/listmonk#3375). Applied
+		// before the ledger existed by a schema-checking fixup (tag
+		// v7.0.0-beta.2-sqlite.3), hence the check.
+		Name: "fork-users-list-role-set-null",
+		Fn: func(ctx context.Context, tx *sqlx.Tx, _ store.MigrationEnv) error {
+			ok, err := listRoleCascades(ctx, tx)
+			if err != nil || !ok {
+				return err
+			}
+			return rebuildUsers(ctx, tx)
+		},
 	},
 }
 
@@ -58,8 +73,17 @@ func rebuildUsers(ctx context.Context, tx *sqlx.Tx) error {
 		return wrap(err)
 	}
 
+	// The DDL below is fixed, so it must match the table it replaces: a
+	// later migration that added a column would otherwise lose it here.
 	const cols = `id, username, password_login, password, email, name, avatar, type,
 		user_role_id, list_role_id, status, twofa_type, twofa_key, loggedin_at, created_at, updated_at`
+	var have []string
+	if err := tx.SelectContext(ctx, &have, `SELECT name FROM pragma_table_info('users') ORDER BY cid`); err != nil {
+		return wrap(err)
+	}
+	if want := strings.Join(strings.Fields(strings.ReplaceAll(cols, ",", " ")), ", "); strings.Join(have, ", ") != want {
+		return fmt.Errorf("rebuilding users: columns are (%s), expected (%s)", strings.Join(have, ", "), want)
+	}
 	stmts := []string{
 		`CREATE TABLE users_new (
     id               INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -103,19 +127,4 @@ func rebuildUsers(ctx context.Context, tx *sqlx.Tx) error {
 		return fmt.Errorf("rebuilding users: %d rows fail the foreign key check", bad)
 	}
 	return nil
-}
-
-// pendingFixups returns the fixups the schema needs.
-func pendingFixups(ctx context.Context, q sqlx.QueryerContext) ([]fixup, error) {
-	var out []fixup
-	for _, f := range fixups {
-		ok, err := f.needed(ctx, q)
-		if err != nil {
-			return nil, fmt.Errorf("checking %q: %w", f.Name, err)
-		}
-		if ok {
-			out = append(out, f)
-		}
-	}
-	return out, nil
 }

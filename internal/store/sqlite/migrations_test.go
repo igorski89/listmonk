@@ -15,9 +15,9 @@ import (
 	null "gopkg.in/volatiletech/null.v6"
 )
 
-// TestFixupListRole upgrades a database with upstream's users table
-// (list_role_id ON DELETE CASCADE, as in tag v7.0.0-beta.2-sqlite.2) and
-// checks that the rebuild keeps the rows and the ID counter, and runs once.
+// TestFixupListRole upgrades a database as tag v7.0.0-beta.2-sqlite.2 left
+// it (list_role_id ON DELETE CASCADE, no ledger) and checks that the
+// rebuild keeps the rows and the ID counter, and runs once.
 func TestFixupListRole(t *testing.T) {
 	ctx := context.Background()
 	lo := log.New(io.Discard, "", 0)
@@ -91,6 +91,7 @@ func TestFixupListRole(t *testing.T) {
 		`DROP TABLE users`,
 		`ALTER TABLE users_old RENAME TO users`,
 		`UPDATE sqlite_sequence SET seq = ? WHERE name = 'users'`,
+		`DROP TABLE schema_migrations`,
 		`COMMIT`,
 	} {
 		var args []any
@@ -128,8 +129,8 @@ func TestFixupListRole(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(p) != 1 || !strings.Contains(p[0], "list_role_id") {
-		t.Fatalf("pending = %v, want the list_role_id fixup", p)
+	if len(p) != 1 || p[0] != "fork-users-list-role-set-null" {
+		t.Fatalf("pending = %v, want [fork-users-list-role-set-null]", p)
 	}
 	for i := 0; i < 2; i++ {
 		if err := st.Schema().Migrate(ctx, env, false); err != nil {
@@ -178,5 +179,112 @@ func TestFixupListRole(t *testing.T) {
 	}
 	if id != ids[2]+1 {
 		t.Errorf("new user ID = %d, want %d (deleted ID reused?)", id, ids[2]+1)
+	}
+}
+
+// TestStepsLedger: a fresh install has every step recorded; a database
+// from before the ledger whose schema already has a step's change (tag
+// v7.0.0-beta.2-sqlite.3: the list role fixup ran) records it without
+// changing anything.
+func TestStepsLedger(t *testing.T) {
+	ctx := context.Background()
+	lo := log.New(io.Discard, "", 0)
+	env := store.MigrationEnv{Log: lo}
+	path := filepath.Join(t.TempDir(), "listmonk.db")
+	st, err := sqlite.Open(path, lo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { st.Close() }()
+	if p, err := st.Schema().Pending(ctx); err != nil || len(p) != 0 {
+		t.Fatalf("pending before install = %v %v, want none", p, err)
+	}
+	if err := st.Schema().Install(ctx, "v7.0.0", env); err != nil {
+		t.Fatal(err)
+	}
+	if p, err := st.Schema().Pending(ctx); err != nil || len(p) != 0 {
+		t.Fatalf("pending after install = %v %v, want none", p, err)
+	}
+	st.Close()
+
+	db, err := sql.Open("sqlite", "file:"+path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(`DROP TABLE schema_migrations`); err != nil {
+		t.Fatal(err)
+	}
+	var before string
+	db.QueryRow(`SELECT sql FROM sqlite_master WHERE name = 'users'`).Scan(&before)
+
+	st, err = sqlite.Open(path, lo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := st.Schema().Pending(ctx)
+	if err != nil || len(p) == 0 {
+		t.Fatalf("pending without a ledger = %v %v, want every step", p, err)
+	}
+	if err := st.Schema().Migrate(ctx, env, false); err != nil {
+		t.Fatal(err)
+	}
+	if p, _ := st.Schema().Pending(ctx); len(p) != 0 {
+		t.Fatalf("pending after migrate = %v", p)
+	}
+	var after string
+	db.QueryRow(`SELECT sql FROM sqlite_master WHERE name = 'users'`).Scan(&after)
+	if after != before {
+		t.Errorf("users rebuilt although already SET NULL:\n%s\n%s", before, after)
+	}
+}
+
+// TestFixupListRoleColumnGuard: the users rebuild has a fixed definition,
+// so it refuses to run on a users table with other columns.
+func TestFixupListRoleColumnGuard(t *testing.T) {
+	ctx := context.Background()
+	lo := log.New(io.Discard, "", 0)
+	env := store.MigrationEnv{Log: lo}
+	path := filepath.Join(t.TempDir(), "listmonk.db")
+	st, err := sqlite.Open(path, lo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Schema().Install(ctx, "v7.0.0", env); err != nil {
+		t.Fatal(err)
+	}
+	st.Close()
+
+	db, err := sql.Open("sqlite", "file:"+path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var ddl string
+	if err := db.QueryRow(`SELECT sql FROM sqlite_master WHERE name = 'users'`).Scan(&ddl); err != nil {
+		t.Fatal(err)
+	}
+	old := strings.Replace(ddl, "ON DELETE SET NULL", "ON DELETE CASCADE", 1)
+	old = strings.Replace(old, "CREATE TABLE users", "CREATE TABLE users_old", 1)
+	for _, q := range []string{`BEGIN`, old, `DROP TABLE users`, `ALTER TABLE users_old RENAME TO users`,
+		`ALTER TABLE users ADD COLUMN extra TEXT`, `DROP TABLE schema_migrations`, `COMMIT`} {
+		if _, err := db.Exec(q); err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+	}
+
+	st, err = sqlite.Open(path, lo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	err = st.Schema().Migrate(ctx, env, false)
+	if err == nil || !strings.Contains(err.Error(), "extra") {
+		t.Fatalf("migrate = %v, want a column mismatch naming extra", err)
+	}
+	var n int
+	db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('users') WHERE name = 'extra'`).Scan(&n)
+	if n != 1 {
+		t.Errorf("column extra lost")
 	}
 }

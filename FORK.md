@@ -152,8 +152,17 @@ recipients 58 ms; fetching all 100k recipients in batches of 1000 4.4 s;
   copy is a crash image, which SQLite recovers (synchronous=NORMAL). Tested
   2026-11-23: copy taken mid-write passes integrity_check and boots.
   Restore both files together, with the container stopped.
-- Migrations: SQLite starts from a baseline at upstream v7.0.0; each later
-  upstream migration needs an SQLite twin in `internal/store/sqlite`.
+- Migrations: SQLite doesn't use upstream's version chain. Its schema
+  started from a baseline (`schema.sql`, upstream v7.0.0-beta.2) and
+  upstream kept changing its v7.0.0 migration after that, so a version
+  can't say what a database has. Instead `internal/store/sqlite/
+  migrations.go` has named steps, append-only, and the table
+  `schema_migrations` records the ones applied (Install records all:
+  `schema.sql` is their result). Each upstream schema or settings change
+  needs a new step, and the same change in `schema.sql`. Steps are recorded
+  on beta builds too, and check before changing, so they're safe on a
+  database that got the change another way. The `migrations` setting still
+  holds the version at install, for the About page.
 
 ### Features added in the fork
 
@@ -188,17 +197,18 @@ recipients 58 ms; fetching all 100k recipients in batches of 1000 4.4 s;
   the users just lose the list role. New installs get it from
   `schema.sql`; existing databases from a fixup (below). Tests: the
   conformance suite (`testRoles`), `TestFixupListRole` on each backend.
-- Fixups (`internal/store/{postgres,sqlite}/fixups.go`): fork-only schema
-  repairs, not tied to an upstream version. Each checks the schema to see
-  if it's needed, so it runs once, wherever it applies, also on beta
-  builds that don't record versions, and becomes a no-op if upstream
-  ships the same change. `Pending` lists the needed ones by name and
-  `Migrate` runs them after the upstream migrations, each in a
-  transaction: final builds ask for `--upgrade`, beta builds run them on
-  start. Postgres: the CASCADE foreign key is found in `pg_constraint`
-  (not by name) and replaced. SQLite: the users table is rebuilt (nothing
-  refers to it, which the fixup checks), keeping its rows and the
-  AUTOINCREMENT counter.
+- Postgres fixups (`internal/store/postgres/fixups.go`): fork-only schema
+  repairs next to upstream's migration chain, not tied to a version. Each
+  checks the schema to see if it's needed, so it runs once, wherever it
+  applies, also on beta builds that don't record versions, and becomes a
+  no-op if upstream ships the same change. `Pending` lists the needed ones
+  by name and `Migrate` runs them after the upstream migrations, each in
+  a transaction. The list-role one finds the CASCADE foreign key in
+  `pg_constraint` (not by name) and replaces it. On SQLite the same change
+  is the step `fork-users-list-role-set-null`: it rebuilds the users
+  table (nothing refers to it, which it checks; it refuses if the columns
+  aren't the ones it expects), keeping its rows and the AUTOINCREMENT
+  counter.
 
 ### Deviations from upstream behaviour (to review)
 

@@ -4,22 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/jmoiron/sqlx"
 	"github.com/knadh/listmonk/internal/store"
-	"golang.org/x/mod/semver"
 )
-
-// Migration is one SQLite schema migration: the SQLite version of the
-// upstream migration with the same Version.
-type Migration struct {
-	Version string
-	Fn      func(ctx context.Context, tx *sqlx.Tx, env store.MigrationEnv) error
-}
-
-// migrations above the baseline (schema.sql is upstream v7.0.0). Each
-// later upstream migration needs its SQLite twin here.
-var migrations = []Migration{}
 
 type schema struct{ *Store }
 type settings struct{ *Store }
@@ -69,6 +58,12 @@ func (s schema) Install(ctx context.Context, version string, env store.Migration
 	if err := recordVersion(ctx, tx, version); err != nil {
 		return err
 	}
+	// schema.sql is the result of every step.
+	for _, st := range steps {
+		if err := recordStep(ctx, tx, st.Name); err != nil {
+			return err
+		}
+	}
 	return wrap(tx.Commit())
 }
 
@@ -90,85 +85,81 @@ func (s schema) Version(ctx context.Context) (string, error) {
 	return v, nil
 }
 
-func (s schema) pending(ctx context.Context) ([]Migration, error) {
-	last, err := s.Version(ctx)
-	if err != nil {
-		return nil, err
-	}
-	for i, m := range migrations {
-		if semver.Compare(m.Version, last) > 0 {
-			return migrations[i:], nil
-		}
-	}
-	return nil, nil
+// ledgerSQL creates the step ledger on databases installed before it
+// existed (it is in schema.sql too).
+const ledgerSQL = `CREATE TABLE IF NOT EXISTS schema_migrations (
+    name        TEXT NOT NULL PRIMARY KEY,
+    applied_at  TIMESTAMP NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f+00:00', 'now'))
+)`
+
+func recordStep(ctx context.Context, tx *sqlx.Tx, name string) error {
+	_, err := tx.ExecContext(ctx, `INSERT INTO schema_migrations (name) VALUES (?) ON CONFLICT DO NOTHING`, name)
+	return wrap(err)
 }
 
-func (s schema) Pending(ctx context.Context) ([]string, error) {
-	migs, err := s.pending(ctx)
-	if err != nil {
+// pending returns the steps not in the ledger, in order (all of them if
+// there's no ledger yet; none if there's no schema).
+func (s schema) pending(ctx context.Context, q sqlx.QueryerContext) ([]Step, error) {
+	if ok, err := s.Installed(ctx); err != nil || !ok {
 		return nil, err
 	}
-	out := make([]string, 0, len(migs))
-	for _, m := range migs {
-		out = append(out, m.Version)
+	var done []string
+	if err := sqlx.SelectContext(ctx, q, &done, `SELECT name FROM schema_migrations`); err != nil {
+		if !strings.Contains(err.Error(), "no such table") {
+			return nil, wrap(err)
+		}
 	}
-	fixes, err := pendingFixups(ctx, s.r)
-	if err != nil {
-		return nil, err
+	have := make(map[string]bool, len(done))
+	for _, n := range done {
+		have[n] = true
 	}
-	for _, f := range fixes {
-		out = append(out, f.Name)
+	var out []Step
+	for _, st := range steps {
+		if !have[st.Name] {
+			out = append(out, st)
+		}
 	}
 	return out, nil
 }
 
-// Migrate runs the pending migrations, then the fork's pending fixups,
-// each in its own transaction (SQLite DDL is transactional, unlike some of
-// upstream's Postgres migrations). Fixups aren't recorded: they check the
-// schema instead.
-func (s schema) Migrate(ctx context.Context, env store.MigrationEnv, record bool) error {
-	migs, err := s.pending(ctx)
+func (s schema) Pending(ctx context.Context) ([]string, error) {
+	sts, err := s.pending(ctx, s.r)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]string, 0, len(sts))
+	for _, st := range sts {
+		out = append(out, st.Name)
+	}
+	return out, nil
+}
+
+// Migrate runs the pending steps in order, each in its own transaction
+// with its ledger entry (SQLite DDL is transactional). Steps are recorded
+// on every build, record or not: unlike upstream's beta migrations they
+// don't change once tagged (see Step).
+func (s schema) Migrate(ctx context.Context, env store.MigrationEnv, _ bool) error {
+	if _, err := s.w.ExecContext(ctx, ledgerSQL); err != nil {
+		return wrap(err)
+	}
+	sts, err := s.pending(ctx, s.w)
 	if err != nil {
 		return err
 	}
-	fixes, err := pendingFixups(ctx, s.r)
-	if err != nil {
-		return err
-	}
-	if len(migs) == 0 && len(fixes) == 0 {
+	if len(sts) == 0 {
 		env.Log.Printf("no upgrades to run. Database is up to date.")
 		return nil
 	}
-	for _, m := range migs {
-		env.Log.Printf("running migration %s", m.Version)
+	for _, st := range sts {
+		env.Log.Printf("running migration %s", st.Name)
 		err := s.inTx(ctx, func(tx *sqlx.Tx) error {
-			if err := m.Fn(ctx, tx, env); err != nil {
+			if err := st.Fn(ctx, tx, env); err != nil {
 				return err
 			}
-			if record {
-				return recordVersion(ctx, tx, m.Version)
-			}
-			return nil
+			return recordStep(ctx, tx, st.Name)
 		})
 		if err != nil {
-			return err
-		}
-	}
-	// Again: the migrations may have created the table a fixup repairs.
-	if fixes, err = pendingFixups(ctx, s.r); err != nil {
-		return err
-	}
-	for _, f := range fixes {
-		env.Log.Printf("running %s", f.Name)
-		err := s.inTx(ctx, func(tx *sqlx.Tx) error {
-			// Checked again: a migration above may have done it.
-			if ok, err := f.needed(ctx, tx); err != nil || !ok {
-				return err
-			}
-			return f.apply(ctx, tx)
-		})
-		if err != nil {
-			return fmt.Errorf("%s: %w", f.Name, err)
+			return fmt.Errorf("migration %s: %w", st.Name, err)
 		}
 	}
 	env.Log.Printf("upgrade complete")
