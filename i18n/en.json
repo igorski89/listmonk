@@ -595,6 +595,8 @@
     "settings.privacy.recordOptinIPHelp": "Record IP address of double opt-ins in subscriber attributes.",
     "settings.security.OIDCAutoCreateUsers": "Auto-create users",
     "settings.security.OIDCAutoCreateUsersHelp": "Automatically create user on first login if the account doesn't exist.",
+    "settings.security.OIDCAutoLogin": "Skip the login page",
+    "settings.security.OIDCAutoLoginHelp": "Send users straight to the OIDC provider instead of showing the login page. The password form stays at /admin/login?password.",
     "settings.security.OIDCClaim": "Claim",
     "settings.security.OIDCClientID": "Client ID",
     "settings.security.OIDCClientSecret": "Client secret",

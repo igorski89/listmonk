@@ -112,6 +112,7 @@ type Config struct {
 		OIDC struct {
 			Enabled           bool                     `koanf:"enabled"`
 			Logout            bool                     `koanf:"logout"`
+			AutoLogin         bool                     `koanf:"auto_login"`
 			ProviderURL       string                   `koanf:"provider_url"`
 			ProviderName      string                   `koanf:"provider_name"`
 			ClientID          string                   `koanf:"client_id"`

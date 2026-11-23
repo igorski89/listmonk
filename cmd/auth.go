@@ -93,6 +93,11 @@ func (a *App) LoginPage(c *echo.Context) error {
 		return a.LoginSetupPage(c)
 	}
 
+	// With OIDC auto-login on, a plain GET goes straight to the provider.
+	if c.Request().Method == http.MethodGet && a.oidcAutoLogin(c) {
+		return a.startOIDCLogin(c)
+	}
+
 	// Process POST login request.
 	var loginErr error
 	if c.Request().Method == http.MethodPost {
@@ -176,6 +181,12 @@ func (a *App) Logout(c *echo.Context) error {
 	// Delete the session from the DB and cookie.
 	_ = sess.Destroy()
 
+	// With OIDC auto-login, the login page would send the user straight back
+	// to the provider, whose own session may log them in again: show the form.
+	if a.cfg.Security.OIDC.Enabled && a.cfg.Security.OIDC.AutoLogin {
+		a.setLoggedOutCookie(c, true)
+	}
+
 	// There might be an OIDC logout URL to redirect to.
 	var logoutURL string
 	if err == nil && token != "" {
@@ -199,14 +210,23 @@ func (a *App) OIDCLogin(c *echo.Context) error {
 		return echo.NewHTTPError(http.StatusUnauthorized, a.i18n.T("users.invalidRequest"))
 	}
 
+	return a.redirectToOIDC(c, nonce.Value, c.FormValue("next"))
+}
+
+// redirectToOIDC sends the browser to the OIDC provider, with the nonce (also
+// in the browser's `nonce` cookie) and the page to return to in the state.
+func (a *App) redirectToOIDC(c *echo.Context, nonce, next string) error {
+	// An explicit login clears the logged-out marker.
+	a.setLoggedOutCookie(c, false)
+
 	// Sanitize the URL and make it relative.
-	next := utils.SanitizeURI(c.FormValue("next"))
+	next = utils.SanitizeURI(next)
 	if next == "/" {
 		next = uriAdmin
 	}
 
 	// Preparethe OIDC payload to send to the provider.
-	state := oidcState{Nonce: nonce.Value, Next: next}
+	state := oidcState{Nonce: nonce, Next: next}
 
 	b, err := json.Marshal(state)
 	if err != nil {
@@ -214,7 +234,7 @@ func (a *App) OIDCLogin(c *echo.Context) error {
 		return echo.NewHTTPError(http.StatusInternalServerError, a.i18n.T("globals.messages.internalError"))
 	}
 
-	authURL, codeVerifier := a.auth.GetOIDCAuthURL(base64.URLEncoding.EncodeToString(b), nonce.Value)
+	authURL, codeVerifier := a.auth.GetOIDCAuthURL(base64.URLEncoding.EncodeToString(b), nonce)
 
 	if authURL == "" {
 		return echo.NewHTTPError(http.StatusInternalServerError, a.i18n.T("globals.messages.internalError"))
@@ -242,6 +262,69 @@ func (a *App) setOIDCVerifierCookie(c *echo.Context, verifier string) {
 		ck.MaxAge = -1
 	}
 
+	c.SetCookie(ck)
+}
+
+// oidcLoggedOutCookie marks a browser that has just logged out, so that OIDC
+// auto-login doesn't send it straight back to the provider.
+const oidcLoggedOutCookie = "oidc_logged_out"
+
+// oidcAutoLogin tells whether a GET of the login page should go straight to
+// the OIDC provider: auto-login is on, and the request isn't asking for the
+// password form (?password), carrying an error (?error) or coming right
+// after a logout.
+func (a *App) oidcAutoLogin(c *echo.Context) bool {
+	o := a.cfg.Security.OIDC
+	if !o.Enabled || !o.AutoLogin {
+		return false
+	}
+	q := c.QueryParams()
+	if q.Has("password") || q.Has("error") {
+		return false
+	}
+	if ck, err := c.Cookie(oidcLoggedOutCookie); err == nil && ck.Value != "" {
+		return false
+	}
+	return true
+}
+
+// startOIDCLogin does what the login page's OIDC button does: sets a fresh
+// nonce cookie and redirects to the provider, returning to `next` after.
+func (a *App) startOIDCLogin(c *echo.Context) error {
+	nonce, err := utils.GenerateRandomString(16)
+	if err != nil {
+		a.log.Printf("error generating OIDC nonce: %v", err)
+		return echo.NewHTTPError(http.StatusInternalServerError, a.i18n.T("globals.messages.internalError"))
+	}
+	c.SetCookie(&http.Cookie{
+		Name:     "nonce",
+		Value:    nonce,
+		HttpOnly: true,
+		Path:     "/",
+		SameSite: http.SameSiteLaxMode,
+	})
+
+	return a.redirectToOIDC(c, nonce, c.QueryParam("next"))
+}
+
+// setLoggedOutCookie sets (for an hour) or clears the logged-out marker.
+func (a *App) setLoggedOutCookie(c *echo.Context, on bool) {
+	ck := &http.Cookie{
+		Name:     oidcLoggedOutCookie,
+		HttpOnly: true,
+		Secure:   strings.HasPrefix(a.urlCfg.RootURL, "https://"),
+		Path:     "/",
+		SameSite: http.SameSiteLaxMode,
+	}
+	if on {
+		ck.Value = "1"
+		ck.MaxAge = 3600
+	} else {
+		if _, err := c.Cookie(oidcLoggedOutCookie); err != nil {
+			return
+		}
+		ck.MaxAge = -1
+	}
 	c.SetCookie(ck)
 }
 

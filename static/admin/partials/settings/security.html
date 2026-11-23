@@ -74,6 +74,12 @@
 					<small data-hint>{{ .L.T "settings.security.OIDCLogoutHelp" }}</small>
 				</label>
 
+				<label data-field class="w-100">
+					<input type="checkbox" role="switch" x-model="form['security.oidc'].auto_login" />
+					{{ .L.T "settings.security.OIDCAutoLogin" }}
+					<small data-hint>{{ .L.T "settings.security.OIDCAutoLoginHelp" }}</small>
+				</label>
+
 				<hr />
 
 				<label data-field class="w-100">
