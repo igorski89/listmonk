@@ -1,0 +1,125 @@
+name: Release
+
+# A tag push publishes ghcr.io/<owner>/listmonk:<tag> and a GitHub release.
+# Run by hand with dry_run (the default) to build and upgrade-test a tag
+# without publishing.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Tag to build
+        required: true
+      dry_run:
+        description: Build and test only, publish nothing
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+
+env:
+  TAG: ${{ inputs.tag || github.ref_name }}
+  PUBLISH: ${{ github.event_name == 'push' || inputs.dry_run == false }}
+
+jobs:
+  test:
+    uses: ./.github/workflows/fork-test.yml
+    with:
+      ref: refs/tags/${{ inputs.tag || github.ref_name }}
+
+  release:
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      packages: write
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: refs/tags/${{ env.TAG }}
+          fetch-depth: 0
+
+      # Tags stay pre-releases (-beta.N/-rc.N) until the fork chooses
+      # otherwise: such builds apply pending migrations on boot, and a final
+      # version would refuse to start on SGNL until --upgrade.
+      - name: Check tag and find the previous release
+        run: |
+          re='^v[0-9]+\.[0-9]+\.[0-9]+-(beta|rc)\.[0-9]+-sqlite\.[0-9]+$'
+          [[ "$TAG" =~ $re ]] || { echo "::error::tag $TAG must match $re"; exit 1; }
+          prev=$(git tag -l 'v*-sqlite.*' --sort=-v:refname --merged "$TAG^" | head -1)
+          [ -n "$prev" ] || { echo "::error::no release before $TAG"; exit 1; }
+          image=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/listmonk
+          echo "PREV=$prev" >> "$GITHUB_ENV"
+          echo "COMMIT=$(git rev-parse --short HEAD)" >> "$GITHUB_ENV"
+          echo "IMAGE=$image" >> "$GITHUB_ENV"
+          echo "$TAG (commit $(git rev-parse --short HEAD)), upgrading from $prev"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          load: true
+          tags: ${{ env.IMAGE }}:${{ env.TAG }}
+          build-args: |
+            LISTMONK_VERSION=${{ env.TAG }}
+            COMMIT=${{ env.COMMIT }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.version=${{ env.TAG }}
+            org.opencontainers.image.revision=${{ env.COMMIT }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # The previous release's published image, or, before the first
+      # published one, that tag built with this Dockerfile.
+      - name: Previous release image
+        run: |
+          if docker pull -q "$IMAGE:$PREV"; then
+            echo "OLD=$IMAGE:$PREV" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          git worktree add -q --detach "$RUNNER_TEMP/prev" "$PREV"
+          cp .dockerignore "$RUNNER_TEMP/prev/"
+          docker buildx build --load -f Dockerfile -t "listmonk-prev:$PREV" \
+            --build-arg LISTMONK_VERSION="$PREV" \
+            --build-arg COMMIT="$(git rev-parse --short "$PREV")" \
+            --cache-from type=gha "$RUNNER_TEMP/prev"
+          echo "OLD=listmonk-prev:$PREV" >> "$GITHUB_ENV"
+
+      - name: Upgrade test
+        run: scripts/fork-upgrade-test.sh "$OLD" "$IMAGE:$TAG"
+
+      - name: Publish image
+        if: env.PUBLISH == 'true'
+        run: docker push "$IMAGE:$TAG"
+
+      - name: GitHub release
+        if: env.PUBLISH == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          {
+            echo "Image: \`$IMAGE:$TAG\` (linux/amd64)"
+            echo
+            echo "Changes since $PREV:"
+            echo
+            git log --no-merges --format='- %s (%h)' "$PREV..$TAG"
+          } > "$RUNNER_TEMP/notes.md"
+          gh release create "$TAG" --prerelease --verify-tag \
+            --title "$TAG" --notes-file "$RUNNER_TEMP/notes.md"

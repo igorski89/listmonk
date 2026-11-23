@@ -5,6 +5,12 @@ on:
     branches: [master, sqlite]
   pull_request:
   workflow_dispatch:
+  workflow_call:
+    inputs:
+      ref:
+        description: Commit or tag to test (default the triggering ref)
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -38,9 +44,11 @@ jobs:
       LISTMONK_TEST_PG_DSN: host=127.0.0.1 port=5432 user=listmonk password=listmonk dbname=listmonk sslmode=disable
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.ref }}
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
 
@@ -50,7 +58,7 @@ jobs:
 
       - name: gofmt
         run: |
-          out=$(gofmt -l $(git ls-files '*.go'))
+          out=$(git ls-files -z '*.go' | xargs -0 gofmt -l)
           if [ -n "$out" ]; then echo "gofmt needed:"; echo "$out"; exit 1; fi
 
       - name: go vet

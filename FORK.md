@@ -15,7 +15,15 @@ history: SGNL `instance/docs/PLAN-listmonk-sqlite.md`.
   isn't tracked: changes are merged only when someone asks for a check.
 - CI: `.github/workflows/fork-test.yml` (gofmt, vet, `go test` on SQLite
   and Postgres 18, frontend build) on every push and PR. Upstream's
-  workflows are removed.
+  workflows and goreleaser configs are removed.
+- Releases: push a tag `vX.Y.Z-(beta|rc).N-sqlite.M` on `master`.
+  `fork-release.yml` runs the tests, builds the root `Dockerfile` (amd64,
+  from the checkout), runs `scripts/fork-upgrade-test.sh` from the
+  previous release's image (SQLite: install, data, upgrade, integrity,
+  ledger equal to a fresh install), then pushes
+  `ghcr.io/igorski89/listmonk:<tag>` and creates a GitHub pre-release.
+  Other tag names are refused: a final version would refuse to boot with
+  pending migrations. Run it by hand (dry run) to test without publishing.
 
 The parity session covers: lists, subscribers (incl. SQL filters,
 forbidden-table and write attempts), import, templates, media, campaigns
@@ -59,8 +67,9 @@ store interfaces -> parity harness -> Postgres store -> app on the store
 
 Not done / next:
 - Review of the deviations and SQLite differences below.
-- SGNL build: tag `v7.0.0-beta.2-sqlite.1` (74e3c328); the Dockerfile
-  lives in the SGNL repo (`docker/listmonk/Dockerfile`), built from the tag.
+- SGNL build: up to `-sqlite.4`, SGNL built the image itself from the tag
+  (`docker/listmonk/Dockerfile` in the SGNL repo); from `-sqlite.5` it can
+  pull `ghcr.io/igorski89/listmonk:<tag>` instead.
 - Deploy-side changes for SGNL need igor's go; nothing was changed on
   the server. They are:
   - the Kamal config;
