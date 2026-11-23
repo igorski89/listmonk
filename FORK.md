@@ -9,7 +9,7 @@ history: SGNL `instance/docs/PLAN-listmonk-sqlite.md`.
 - Parity harness: `tests/parity` (`setup.sh`, then `compare.sh`): installs
   a baseline build and this tree into a local Postgres, runs the same API
   session, diffs normalised responses, database dumps and sent mail.
-- Branch `master` (also pushed as `sqlite`, its old name), based on
+- Branch `master` (was `sqlite` until 2026-11-23), based on
   upstream tag `v7.0.0-beta.2`, with upstream master merged at `6242fd85`
   (2026-11-23, for its security fixes; see "Upstream merges"). Upstream
   isn't tracked: changes are merged only when someone asks for a check.
