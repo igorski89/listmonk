@@ -36,11 +36,15 @@ func TestStore(t *testing.T) {
 }
 
 // openPG wipes the LISTMONK_TEST_PG_DSN database (skipping the test if it
-// isn't set), installs the schema and returns the store and its pool.
+// isn't set, failing it under CI), installs the schema and returns the store
+// and its pool.
 func openPG(t *testing.T, o store.Options) (*postgres.Store, *sqlx.DB) {
 	t.Helper()
 	dsn := os.Getenv("LISTMONK_TEST_PG_DSN")
 	if dsn == "" {
+		if os.Getenv("CI") != "" {
+			t.Fatal("LISTMONK_TEST_PG_DSN not set under CI")
+		}
 		t.Skip("LISTMONK_TEST_PG_DSN not set")
 	}
 	root, err := filepath.Abs("../../..")

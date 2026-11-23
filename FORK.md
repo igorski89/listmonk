@@ -9,10 +9,13 @@ history: SGNL `instance/docs/PLAN-listmonk-sqlite.md`.
 - Parity harness: `tests/parity` (`setup.sh`, then `compare.sh`): installs
   a baseline build and this tree into a local Postgres, runs the same API
   session, diffs normalised responses, database dumps and sent mail.
-- Branch `sqlite`, based on upstream tag `v7.0.0-beta.2`, with upstream
-  master merged at `6242fd85` (2026-11-23, for its security fixes; see
-  "Upstream merges"). Upstream releases are merged by tag; master when it
-  has fixes that can't wait.
+- Branch `master` (also pushed as `sqlite`, its old name), based on
+  upstream tag `v7.0.0-beta.2`, with upstream master merged at `6242fd85`
+  (2026-11-23, for its security fixes; see "Upstream merges"). Upstream
+  isn't tracked: changes are merged only when someone asks for a check.
+- CI: `.github/workflows/fork-test.yml` (gofmt, vet, `go test` on SQLite
+  and Postgres 18, frontend build) on every push and PR. Upstream's
+  workflows are removed.
 
 The parity session covers: lists, subscribers (incl. SQL filters,
 forbidden-table and write attempts), import, templates, media, campaigns

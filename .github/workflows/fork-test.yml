@@ -1,0 +1,64 @@
+name: Test
+
+on:
+  push:
+    branches: [master, sqlite]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: test-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    services:
+      postgres:
+        # Alpine: C collation, as on SGNL (storetest pins the sort order).
+        image: postgres:18-alpine
+        env:
+          POSTGRES_USER: listmonk
+          POSTGRES_PASSWORD: listmonk
+          POSTGRES_DB: listmonk
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U listmonk"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      LISTMONK_TEST_PG_DSN: host=127.0.0.1 port=5432 user=listmonk password=listmonk dbname=listmonk sslmode=disable
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.14"
+
+      - name: gofmt
+        run: |
+          out=$(gofmt -l $(git ls-files '*.go'))
+          if [ -n "$out" ]; then echo "gofmt needed:"; echo "$out"; exit 1; fi
+
+      - name: go vet
+        run: go vet ./...
+
+      # -p 1: the Postgres tests share one database and wipe it.
+      - name: go test (SQLite and Postgres)
+        run: go test -p 1 -count=1 ./...
+
+      - name: Build (backend, frontend, packed binary)
+        run: make dist
