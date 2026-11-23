@@ -289,7 +289,29 @@ if os.environ.get("OIDC_AUTOLOGIN") == "1":
     assert (s, loc) == (302, "/admin/campaigns"), (s, loc)
     s, p, _ = req("GET", BASE + "/api/profile", opener=br)
     assert s == 200 and p["data"]["username"] == "alice", (s, p)
+    # Right after a login, auto-login pauses: the login page is the form.
+    assert cookies(br).get("oidc_autologin_pause") == "1", cookies(br)
+    assert is_form(req("GET", BASE + "/admin/login", opener=br))
     record("auto-1-straight-to-idp", "GET", "/admin/login?next=/admin/campaigns", 302, "ok")
+
+    # 1b. The plain link (no next=) lands on /admin.
+    brp = browser()
+    s, _, kc_url = req("GET", BASE + "/admin/login", opener=brp)
+    assert s == 302 and kc_url.startswith(REALM), (s, kc_url)
+    cb, _ = to_callback(brp, kc_url, "frank", "frankpass")
+    s, _, loc = req("GET", cb, opener=brp)
+    assert (s, loc) == (302, "/admin"), (s, loc)
+
+    # 1c. next= pointing at the login page itself returns to /admin, not
+    # into another login.
+    for bad in ["/admin/login", "/admin/login?password", "/admin/login/", "/auth/oidc?code=x"]:
+        brl = browser()
+        s, _, kc_url = req("GET", BASE + "/admin/login?next=" + urllib.parse.quote(bad), opener=brl)
+        assert s == 302, (bad, s)
+        st = urllib.parse.parse_qs(urllib.parse.urlsplit(kc_url).query)["state"][0]
+        nxt = json.loads(base64.urlsafe_b64decode(st + "=" * (-len(st) % 4)))["next"]
+        assert nxt == "/admin", (bad, nxt)
+    record("auto-1b-plain-link-and-next-login", "GET", "/admin/login", 302, "ok")
 
     # 2. A deep link without a session: the app redirects to the login page,
     # which goes to Keycloak; Keycloak's SSO session brings the user back.
@@ -306,14 +328,14 @@ if os.environ.get("OIDC_AUTOLOGIN") == "1":
     # 3. After logout the login page shows the form, though Keycloak's
     # session would log the user straight back in.
     s, p, _ = req("POST", BASE + "/api/logout", opener=br)
-    assert s == 200 and cookies(br).get("oidc_logged_out") == "1", (s, cookies(br))
+    assert s == 200 and cookies(br).get("oidc_autologin_pause") == "1", (s, cookies(br))
     assert p["redirect_url"].startswith(REALM + "/protocol/openid-connect/logout"), p
     r = req("GET", BASE + "/admin/login", opener=br)
     assert is_form(r), r[:1] + r[2:]
-    # The SSO button still works (rides Keycloak's session) and clears the mark.
+    # The SSO button still works (rides Keycloak's session) and clears the pause.
     nonce = re.search(r'name="nonce" value="([^"]+)"', r[1]).group(1)
     s, _, kc_url = req("POST", BASE + "/auth/oidc", form={"nonce": nonce, "next": "/admin"}, opener=br)
-    assert s == 302 and "oidc_logged_out" not in cookies(br), (s, cookies(br))
+    assert s == 302 and "oidc_autologin_pause" not in cookies(br), (s, cookies(br))
     cb, sso = to_callback(br, kc_url, "alice", "alicepass")
     assert sso, "expected Keycloak's SSO session"
     s, _, loc = req("GET", cb, opener=br)
@@ -352,6 +374,15 @@ if os.environ.get("OIDC_AUTOLOGIN") == "1":
     s, body, loc = req("GET", BASE + "/auth/oidc?error=access_denied&state=" + urllib.parse.quote(q["state"][0]), opener=brx)
     assert s in (200, 401) and not loc, (s, loc)
     record("auto-5-no-loop-on-error", "GET", "/auth/oidc?error", s, "ok")
+
+    # 5b. Provider unreachable: the form with an error, not a 500.
+    set_oidc("settings-autologin-deadidp", provider_url="http://127.0.0.1:58099/realms/parity")
+    r = req("GET", BASE + "/admin/login")
+    assert is_form(r) and 'role="alert"' in r[1], (r[0], r[2])
+    set_oidc("settings-autologin-idp-back", provider_url=REALM)
+    s, _, kc_url = req("GET", BASE + "/admin/login")
+    assert s == 302 and kc_url.startswith(REALM), (s, kc_url)
+    record("auto-5b-idp-down", "GET", "/admin/login", 200, "ok")
 
     # 6. Off again: the login page is the form.
     set_oidc("settings-autologin-off", auto_login=False)

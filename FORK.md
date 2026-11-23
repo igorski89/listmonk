@@ -161,15 +161,25 @@ recipients 58 ms; fetching all 100k recipients in batches of 1000 4.4 s;
   "Skip the login page" in Settings -> Security). When OIDC is enabled and
   it's on, `GET /admin/login` does what the login page's OIDC button does
   (fresh nonce cookie, state with `next`, PKCE) and redirects to the
-  provider. The form still shows for `/admin/login?password` (break-glass
-  password login), for `?error=...`, and for an hour after a logout
-  (cookie `oidc_logged_out`, cleared by the next OIDC login) so that the
-  provider's session doesn't log the user straight back in. A rejected
-  OIDC login renders its error on the callback, so there's no redirect
-  loop. Off, behaviour is upstream's; the only difference in the parity
-  session is the new key in the settings. No migration: a missing key
-  reads as false. Tests: `OIDC=1 OIDC_AUTOLOGIN=1 tests/parity/run.sh`
-  (self-checking; beta.2 has no such setting), passing on both backends.
+  provider. The form still shows:
+  - for `/admin/login?password` (break-glass password login; the
+    forgot-password page links there);
+  - for `?error=...`;
+  - while auto-login is paused in the browser (cookie
+    `oidc_autologin_pause`): an hour after a logout, so the provider's
+    session doesn't log the user straight back in, and a minute after an
+    OIDC login, so a session that doesn't stick can't loop; the OIDC
+    button ends the pause;
+  - with the error, if the provider can't be reached.
+  `next` pointing at the login page or the callback becomes `/admin`. A
+  rejected OIDC login renders its error on the callback (no redirect).
+  Not changed: an expired 2FA token redirects to `/admin`, which with
+  auto-login goes to the provider; password users use `?password`.
+  Off, behaviour is upstream's; the only differences in the parity
+  session are the new key in the settings and the toggle. No migration:
+  a missing key reads as false. Tests: `OIDC=1 OIDC_AUTOLOGIN=1
+  tests/parity/run.sh` (self-checking; beta.2 has no such setting),
+  passing on both backends.
 
 ### Deviations from upstream behaviour (to review)
 
