@@ -172,7 +172,9 @@ def set_oidc(name, **over):
         try:
             s, p = api("", "GET", "/api/settings", rec=False)
             if s == 200 and all(p["data"]["security.oidc"].get(k) == v for k, v in over.items() if k != "client_secret"):
-                s2, page, _ = req("GET", BASE + "/admin/login")
+                # ?password: the form even with auto-login on (fork only;
+                # older builds ignore the parameter).
+                s2, page, _ = req("GET", BASE + "/admin/login?password")
                 if over.get("enabled") is False or "Keycloak" in page:
                     return
         except Exception:
@@ -248,6 +250,114 @@ api("role-delete-referenced-list", "DELETE", f"/api/roles/{r_lists}")
 api("frank-logout", "POST", "/api/logout", opener=br_frank)
 api("frank-after-logout", "GET", "/api/profile", opener=br_frank)
 api("carol-still-in", "GET", "/api/profile", opener=br_carol)
+
+# ---------------------------------------------------------------- auto-login (fork only)
+# Self-checking (asserts): beta.2 has no auto-login, so it can't be the
+# oracle. Runs only with OIDC_AUTOLOGIN=1, never in compare.sh's baseline run.
+if os.environ.get("OIDC_AUTOLOGIN") == "1":
+    def cookies(br):
+        jar = next(h for h in br.handlers if isinstance(h, urllib.request.HTTPCookieProcessor)).cookiejar
+        return {c.name: c.value for c in jar if c.domain.startswith("127.0.0.1") and ":58080" not in c.domain and c.path == "/"}
+
+    def to_callback(br, kc_url, user, password):
+        """Keycloak: log in (or ride its SSO session); return the callback URL."""
+        s, kc_page, loc = req("GET", kc_url, opener=br)
+        if s == 302 and loc.startswith(BASE + "/auth/oidc"):
+            return loc, True
+        action = html.unescape(re.search(r'<form[^>]+id="kc-form-login"[^>]+action="([^"]+)"', kc_page).group(1))
+        s, _, cb = req("POST", action, form={"username": user, "password": password, "credentialId": ""}, opener=br)
+        assert s == 302 and cb.startswith(BASE + "/auth/oidc"), (s, cb)
+        return cb, False
+
+    def is_form(r):
+        s, body, loc = r
+        return s == 200 and isinstance(body, str) and 'name="password"' in body
+
+    set_oidc("settings-autologin-on", auto_login=True)
+    s, p = api("autologin-settings", "GET", "/api/settings", rec=False)
+    assert p["data"]["security.oidc"]["auto_login"] is True
+
+    # 1. The login page goes straight to Keycloak, keeping next=.
+    br = browser()
+    s, _, kc_url = req("GET", BASE + "/admin/login?next=/admin/campaigns", opener=br)
+    assert s == 302 and kc_url.startswith(REALM + "/protocol/openid-connect/auth"), (s, kc_url)
+    assert "code_challenge=" in kc_url, "PKCE missing"
+    assert cookies(br).get("nonce"), "no nonce cookie"
+    cb, sso = to_callback(br, kc_url, "alice", "alicepass")
+    assert not sso
+    s, _, loc = req("GET", cb, opener=br)
+    assert (s, loc) == (302, "/admin/campaigns"), (s, loc)
+    s, p, _ = req("GET", BASE + "/api/profile", opener=br)
+    assert s == 200 and p["data"]["username"] == "alice", (s, p)
+    record("auto-1-straight-to-idp", "GET", "/admin/login?next=/admin/campaigns", 302, "ok")
+
+    # 2. A deep link without a session: the app redirects to the login page,
+    # which goes to Keycloak; Keycloak's SSO session brings the user back.
+    br2 = browser()
+    s, _, loc = req("GET", BASE + "/admin/subscribers", opener=br2)
+    assert s in (302, 307) and "/admin/login" in loc, (s, loc)
+    s, _, kc_url = req("GET", loc if loc.startswith("http") else BASE + loc, opener=br2)
+    assert s == 302 and kc_url.startswith(REALM), (s, kc_url)
+    cb, _ = to_callback(br2, kc_url, "carol", "carolpass")
+    s, _, loc = req("GET", cb, opener=br2)
+    assert (s, loc) == (302, "/admin/subscribers"), (s, loc)
+    record("auto-2-deep-link", "GET", "/admin/subscribers", 302, "ok")
+
+    # 3. After logout the login page shows the form, though Keycloak's
+    # session would log the user straight back in.
+    s, p, _ = req("POST", BASE + "/api/logout", opener=br)
+    assert s == 200 and cookies(br).get("oidc_logged_out") == "1", (s, cookies(br))
+    assert p["redirect_url"].startswith(REALM + "/protocol/openid-connect/logout"), p
+    r = req("GET", BASE + "/admin/login", opener=br)
+    assert is_form(r), r[:1] + r[2:]
+    # The SSO button still works (rides Keycloak's session) and clears the mark.
+    nonce = re.search(r'name="nonce" value="([^"]+)"', r[1]).group(1)
+    s, _, kc_url = req("POST", BASE + "/auth/oidc", form={"nonce": nonce, "next": "/admin"}, opener=br)
+    assert s == 302 and "oidc_logged_out" not in cookies(br), (s, cookies(br))
+    cb, sso = to_callback(br, kc_url, "alice", "alicepass")
+    assert sso, "expected Keycloak's SSO session"
+    s, _, loc = req("GET", cb, opener=br)
+    assert (s, loc) == (302, "/admin"), (s, loc)
+    req("POST", BASE + "/api/logout", opener=br)
+    record("auto-3-no-redirect-after-logout", "GET", "/admin/login", 200, "ok")
+
+    # 4. ?password: the password form, and password login works.
+    br3 = browser()
+    r = req("GET", BASE + "/admin/login?password", opener=br3)
+    assert is_form(r), r[:1] + r[2:]
+    r = req("GET", BASE + "/admin/login?password=1&next=/admin/lists", opener=br3)
+    assert is_form(r) and 'name="next" value="/admin/lists"' in r[1]
+    s, _, loc = req("POST", BASE + "/admin/login",
+                    form={"username": "alice", "password": "alicepass123", "next": "/admin/lists"}, opener=br3)
+    assert (s, loc) == (302, "/admin/lists"), (s, loc)
+    # A failed password login renders the form with the error, no redirect.
+    r = req("POST", BASE + "/admin/login", form={"username": "alice", "password": "wrongpass123", "next": "/admin"})
+    assert is_form(r) and "role=\"alert\"" in r[1], r[:1]
+    record("auto-4-password-escape", "GET", "/admin/login?password", 200, "ok")
+
+    # 5. Errors don't loop. An error on the login page shows the form; a
+    # rejected OIDC login renders the error on the callback, not a redirect.
+    assert is_form(req("GET", BASE + "/admin/login?error=access_denied"))
+    for user, pw, want in [("dave", "davepass", "Invalid login"), ("eve", "evepass", "not verified")]:
+        brx = browser()
+        s, _, kc_url = req("GET", BASE + "/admin/login", opener=brx)
+        assert s == 302, s
+        cb, _ = to_callback(brx, kc_url, user, pw)
+        s, body, loc = req("GET", cb, opener=brx)
+        assert s == 200 and not loc and want in page_error(body), (user, s, loc, page_error(body))
+    # Keycloak reporting an error (user cancelled) to the callback.
+    brx = browser()
+    s, _, kc_url = req("GET", BASE + "/admin/login", opener=brx)
+    q = urllib.parse.parse_qs(urllib.parse.urlsplit(kc_url).query)
+    s, body, loc = req("GET", BASE + "/auth/oidc?error=access_denied&state=" + urllib.parse.quote(q["state"][0]), opener=brx)
+    assert s in (200, 401) and not loc, (s, loc)
+    record("auto-5-no-loop-on-error", "GET", "/auth/oidc?error", s, "ok")
+
+    # 6. Off again: the login page is the form.
+    set_oidc("settings-autologin-off", auto_login=False)
+    assert is_form(req("GET", BASE + "/admin/login"))
+    record("auto-6-off", "GET", "/admin/login", 200, "ok")
+    print("oidc auto-login: all checks passed")
 
 # Leave OIDC off so the final database dump is the same shape as without it.
 set_oidc("settings-oidc-off", enabled=False)
