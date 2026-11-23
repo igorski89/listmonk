@@ -1,16 +1,17 @@
 name: Release
 
 # A tag push publishes ghcr.io/<owner>/listmonk:<tag> and a GitHub release.
-# Run by hand with dry_run (the default) to build and upgrade-test a tag
-# without publishing.
+# Run by hand with dry_run (the default) to build and upgrade-test a tag or
+# branch without publishing.
 on:
   push:
     tags: ["v*"]
   workflow_dispatch:
     inputs:
-      tag:
-        description: Tag to build
+      ref:
+        description: Tag (or, for a dry run, branch) to build
         required: true
+        default: master
       dry_run:
         description: Build and test only, publish nothing
         type: boolean
@@ -20,17 +21,17 @@ permissions:
   contents: read
 
 concurrency:
-  group: release-${{ inputs.tag || github.ref_name }}
+  group: release-${{ inputs.ref || github.ref_name }}
 
 env:
-  TAG: ${{ inputs.tag || github.ref_name }}
+  REF: ${{ inputs.ref || github.ref_name }}
   PUBLISH: ${{ github.event_name == 'push' || inputs.dry_run == false }}
 
 jobs:
   test:
     uses: ./.github/workflows/fork-test.yml
     with:
-      ref: refs/tags/${{ inputs.tag || github.ref_name }}
+      ref: ${{ inputs.ref || github.ref_name }}
 
   release:
     needs: test
@@ -43,7 +44,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
-          ref: refs/tags/${{ env.TAG }}
+          ref: ${{ env.REF }}
           fetch-depth: 0
 
       # Tags stay pre-releases (-beta.N/-rc.N) until the fork chooses
@@ -52,14 +53,21 @@ jobs:
       - name: Check tag and find the previous release
         run: |
           re='^v[0-9]+\.[0-9]+\.[0-9]+-(beta|rc)\.[0-9]+-sqlite\.[0-9]+$'
-          [[ "$TAG" =~ $re ]] || { echo "::error::tag $TAG must match $re"; exit 1; }
-          prev=$(git tag -l 'v*-sqlite.*' --sort=-v:refname --merged "$TAG^" | head -1)
-          [ -n "$prev" ] || { echo "::error::no release before $TAG"; exit 1; }
+          prev=$(git tag -l 'v*-sqlite.*' --sort=-v:refname --merged HEAD^ | head -1)
+          [ -n "$prev" ] || { echo "::error::no release before $REF"; exit 1; }
+          if [[ "$REF" =~ $re ]] && git rev-parse -q --verify "refs/tags/$REF" >/dev/null; then
+            tag=$REF
+          elif [ "$PUBLISH" = true ]; then
+            echo "::error::$REF is not a release tag (must match $re)"; exit 1
+          else
+            tag=$prev-dryrun
+          fi
+          echo "TAG=$tag" >> "$GITHUB_ENV"
           image=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/listmonk
           echo "PREV=$prev" >> "$GITHUB_ENV"
           echo "COMMIT=$(git rev-parse --short HEAD)" >> "$GITHUB_ENV"
           echo "IMAGE=$image" >> "$GITHUB_ENV"
-          echo "$TAG (commit $(git rev-parse --short HEAD)), upgrading from $prev"
+          echo "$tag (commit $(git rev-parse --short HEAD)), upgrading from $prev"
 
       - uses: docker/setup-buildx-action@v3
 
@@ -119,7 +127,7 @@ jobs:
             echo
             echo "Changes since $PREV:"
             echo
-            git log --no-merges --format='- %s (%h)' "$PREV..$TAG"
+            git log --no-merges --format='- %s (%h)' "$PREV..HEAD"
           } > "$RUNNER_TEMP/notes.md"
           gh release create "$TAG" --prerelease --verify-tag \
             --title "$TAG" --notes-file "$RUNNER_TEMP/notes.md"
