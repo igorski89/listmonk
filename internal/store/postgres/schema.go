@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 
 	"github.com/jmoiron/sqlx/types"
 	"github.com/knadh/listmonk/internal/store"
@@ -89,15 +90,28 @@ func (s schema) Pending(ctx context.Context) ([]string, error) {
 	for _, m := range migs {
 		out = append(out, m.Version)
 	}
+	fixes, err := pendingFixups(ctx, s.db)
+	if err != nil {
+		return nil, err
+	}
+	for _, f := range fixes {
+		out = append(out, f.Name)
+	}
 	return out, nil
 }
 
+// Migrate runs the pending upstream migrations, then the fork's pending
+// fixups (each in a transaction; not recorded: they check the schema).
 func (s schema) Migrate(ctx context.Context, env store.MigrationEnv, record bool) error {
 	migs, err := s.pending(ctx)
 	if err != nil {
 		return err
 	}
-	if len(migs) == 0 {
+	fixes, err := pendingFixups(ctx, s.db)
+	if err != nil {
+		return err
+	}
+	if len(migs) == 0 && len(fixes) == 0 {
 		env.Log.Printf("no upgrades to run. Database is up to date.")
 		return nil
 	}
@@ -119,6 +133,16 @@ func (s schema) Migrate(ctx context.Context, env store.MigrationEnv, record bool
 				}
 				return &MigrationError{Version: m.Version, Record: true, Err: err}
 			}
+		}
+	}
+	// Again: the migrations may have created the table a fixup repairs.
+	if fixes, err = pendingFixups(ctx, s.db); err != nil {
+		return err
+	}
+	for _, f := range fixes {
+		env.Log.Printf("running %s", f.Name)
+		if err := s.runFixup(ctx, f); err != nil {
+			return fmt.Errorf("%s: %w", f.Name, err)
 		}
 	}
 	env.Log.Printf("upgrade complete")

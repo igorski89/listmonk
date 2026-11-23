@@ -181,6 +181,25 @@ recipients 58 ms; fetching all 100k recipients in batches of 1000 4.4 s;
   tests/parity/run.sh` (self-checking; beta.2 has no such setting),
   passing on both backends.
 
+### Bug fixes in the fork
+
+- Deleting a list role no longer deletes its users: `users.list_role_id`
+  is `ON DELETE SET NULL` (upstream: `CASCADE`; knadh/listmonk#3375), so
+  the users just lose the list role. New installs get it from
+  `schema.sql`; existing databases from a fixup (below). Tests: the
+  conformance suite (`testRoles`), `TestFixupListRole` on each backend.
+- Fixups (`internal/store/{postgres,sqlite}/fixups.go`): fork-only schema
+  repairs, not tied to an upstream version. Each checks the schema to see
+  if it's needed, so it runs once, wherever it applies, also on beta
+  builds that don't record versions, and becomes a no-op if upstream
+  ships the same change. `Pending` lists the needed ones by name and
+  `Migrate` runs them after the upstream migrations, each in a
+  transaction: final builds ask for `--upgrade`, beta builds run them on
+  start. Postgres: the CASCADE foreign key is found in `pg_constraint`
+  (not by name) and replaced. SQLite: the users table is rebuilt (nothing
+  refers to it, which the fixup checks), keeping its rows and the
+  AUTOINCREMENT counter.
+
 ### Deviations from upstream behaviour (to review)
 
 None show in the parity session. Known differences on paths it doesn't

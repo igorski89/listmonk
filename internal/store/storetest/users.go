@@ -186,12 +186,21 @@ func testRoles(t *testing.T, st store.Store) {
 	eq(t, len(lrs[0].Lists), 0, "list permission deleted")
 
 	// Roles in use can't be deleted; others can, and missing is a no-op.
-	_, err = st.Users().Create(ctx, auth.User{Username: "ed", PasswordLogin: true, Password: null.StringFrom("edpass1234"),
-		Email: null.StringFrom("ed@example.com"), Name: "Ed", Type: "user", UserRoleID: ed.ID, Status: "enabled"})
+	edID, err := st.Users().Create(ctx, auth.User{Username: "ed", PasswordLogin: true, Password: null.StringFrom("edpass1234"),
+		Email: null.StringFrom("ed@example.com"), Name: "Ed", Type: "user", UserRoleID: ed.ID, ListRoleID: &lr.ID, Status: "enabled"})
 	must(t, err)
 	isErr(t, R.Delete(ctx, ed.ID), store.ErrInUse, "delete a role in use")
 	must(t, R.Delete(ctx, lr.ID))
 	must(t, R.Delete(ctx, 9999))
+
+	// Fork: deleting a list role takes it off its users; upstream deletes
+	// the users (knadh/listmonk#3375).
+	u, err := st.Users().Get(ctx, store.UserRef{ID: edID})
+	must(t, err)
+	if u.ListRoleID != nil {
+		t.Errorf("list role %d still set after deleting it", *u.ListRoleID)
+	}
+	eq(t, u.UserRoleID, ed.ID, "user role kept")
 	_ = role
 }
 

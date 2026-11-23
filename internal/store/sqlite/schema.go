@@ -3,6 +3,7 @@ package sqlite
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 
 	"github.com/jmoiron/sqlx"
 	"github.com/knadh/listmonk/internal/store"
@@ -111,17 +112,30 @@ func (s schema) Pending(ctx context.Context) ([]string, error) {
 	for _, m := range migs {
 		out = append(out, m.Version)
 	}
+	fixes, err := pendingFixups(ctx, s.r)
+	if err != nil {
+		return nil, err
+	}
+	for _, f := range fixes {
+		out = append(out, f.Name)
+	}
 	return out, nil
 }
 
-// Migrate runs the pending migrations, each in its own transaction (SQLite
-// DDL is transactional, unlike some of upstream's Postgres migrations).
+// Migrate runs the pending migrations, then the fork's pending fixups,
+// each in its own transaction (SQLite DDL is transactional, unlike some of
+// upstream's Postgres migrations). Fixups aren't recorded: they check the
+// schema instead.
 func (s schema) Migrate(ctx context.Context, env store.MigrationEnv, record bool) error {
 	migs, err := s.pending(ctx)
 	if err != nil {
 		return err
 	}
-	if len(migs) == 0 {
+	fixes, err := pendingFixups(ctx, s.r)
+	if err != nil {
+		return err
+	}
+	if len(migs) == 0 && len(fixes) == 0 {
 		env.Log.Printf("no upgrades to run. Database is up to date.")
 		return nil
 	}
@@ -138,6 +152,23 @@ func (s schema) Migrate(ctx context.Context, env store.MigrationEnv, record bool
 		})
 		if err != nil {
 			return err
+		}
+	}
+	// Again: the migrations may have created the table a fixup repairs.
+	if fixes, err = pendingFixups(ctx, s.r); err != nil {
+		return err
+	}
+	for _, f := range fixes {
+		env.Log.Printf("running %s", f.Name)
+		err := s.inTx(ctx, func(tx *sqlx.Tx) error {
+			// Checked again: a migration above may have done it.
+			if ok, err := f.needed(ctx, tx); err != nil || !ok {
+				return err
+			}
+			return f.apply(ctx, tx)
+		})
+		if err != nil {
+			return fmt.Errorf("%s: %w", f.Name, err)
 		}
 	}
 	env.Log.Printf("upgrade complete")

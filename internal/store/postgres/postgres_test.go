@@ -22,11 +22,27 @@ import (
 // "host=127.0.0.1 port=55432 user=listmonk password=listmonk dbname=listmonk sslmode=disable"
 // (tests/parity/setup.sh starts one).
 func TestStore(t *testing.T) {
+	open := func(t *testing.T, o store.Options) store.Store {
+		t.Helper()
+		st, _ := openPG(t, o)
+		return st
+	}
+
+	storetest.Run(t, open, storetest.Fixtures{
+		CityBerlin:     "subscribers.attribs->>'city' = 'Berlin'",
+		ForbiddenTable: "(SELECT COUNT(*) FROM users) > 0",
+		Write:          "1=1; DELETE FROM subscribers",
+	})
+}
+
+// openPG wipes the LISTMONK_TEST_PG_DSN database (skipping the test if it
+// isn't set), installs the schema and returns the store and its pool.
+func openPG(t *testing.T, o store.Options) (*postgres.Store, *sqlx.DB) {
+	t.Helper()
 	dsn := os.Getenv("LISTMONK_TEST_PG_DSN")
 	if dsn == "" {
 		t.Skip("LISTMONK_TEST_PG_DSN not set")
 	}
-
 	root, err := filepath.Abs("../../..")
 	if err != nil {
 		t.Fatal(err)
@@ -37,43 +53,34 @@ func TestStore(t *testing.T) {
 	}
 	lo := log.New(io.Discard, "", 0)
 
-	open := func(t *testing.T, o store.Options) store.Store {
-		t.Helper()
-		db, err := sqlx.Connect("postgres", dsn)
+	db, err := sqlx.Connect("postgres", dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	db = db.Unsafe()
+	if _, err := db.Exec("DROP SCHEMA public CASCADE; CREATE SCHEMA public;"); err != nil {
+		t.Fatal(err)
+	}
+
+	qMap := goyesql.Queries{}
+	files, _ := filepath.Glob(filepath.Join(root, "queries", "*.sql"))
+	for _, f := range files {
+		q, err := goyesql.ParseFile(f)
 		if err != nil {
 			t.Fatal(err)
 		}
-		db = db.Unsafe()
-		if _, err := db.Exec("DROP SCHEMA public CASCADE; CREATE SCHEMA public;"); err != nil {
-			t.Fatal(err)
+		for k, v := range q {
+			qMap[k] = v
 		}
-
-		qMap := goyesql.Queries{}
-		files, _ := filepath.Glob(filepath.Join(root, "queries", "*.sql"))
-		for _, f := range files {
-			q, err := goyesql.ParseFile(f)
-			if err != nil {
-				t.Fatal(err)
-			}
-			for k, v := range q {
-				qMap[k] = v
-			}
-		}
-
-		st := postgres.New(db, qMap, nil, lo)
-		if err := st.Schema().Install(context.Background(), "v7.0.0", store.MigrationEnv{FS: fs, Log: lo}); err != nil {
-			t.Fatal(err)
-		}
-		if err := st.Configure(o); err != nil {
-			t.Fatal(err)
-		}
-		t.Cleanup(func() { st.Close() })
-		return st
 	}
 
-	storetest.Run(t, open, storetest.Fixtures{
-		CityBerlin:     "subscribers.attribs->>'city' = 'Berlin'",
-		ForbiddenTable: "(SELECT COUNT(*) FROM users) > 0",
-		Write:          "1=1; DELETE FROM subscribers",
-	})
+	st := postgres.New(db, qMap, nil, lo)
+	if err := st.Schema().Install(context.Background(), "v7.0.0", store.MigrationEnv{FS: fs, Log: lo}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Configure(o); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	return st, db
 }

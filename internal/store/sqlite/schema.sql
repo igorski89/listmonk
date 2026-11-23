@@ -301,7 +301,7 @@ CREATE TABLE users (
     avatar           TEXT NULL,
     type             TEXT NOT NULL DEFAULT 'user' CHECK (type IN ('user', 'api')),
     user_role_id     INTEGER NOT NULL REFERENCES roles(id) ON DELETE RESTRICT,
-    list_role_id     INTEGER NULL REFERENCES roles(id) ON DELETE CASCADE,
+    list_role_id     INTEGER NULL REFERENCES roles(id) ON DELETE SET NULL,
     status           TEXT NOT NULL DEFAULT 'disabled' CHECK (status IN ('enabled', 'disabled')),
     twofa_type       TEXT NOT NULL DEFAULT 'none' CHECK (twofa_type IN ('none', 'totp')),
     twofa_key        TEXT NULL,
