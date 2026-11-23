@@ -397,6 +397,7 @@ func (o *Auth) middleware(next echo.HandlerFunc, bearer bool) echo.HandlerFunc {
 					c.Set(UserHTTPCtxKey, err)
 				} else {
 					c.Set(UserHTTPCtxKey, user)
+					c.Set(bearerCtxKey, true)
 				}
 				return next(c)
 			}

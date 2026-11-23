@@ -1482,9 +1482,14 @@ func initAPIJWT(ko *koanf.Koanf) auth.APIJWTConfig {
 		Issuer:    strings.TrimSpace(ko.String("api_jwt.issuer")),
 		Audiences: list("api_jwt.audiences"),
 		Clients:   list("api_jwt.clients"),
+
+		Introspect:      ko.Bool("api_jwt.introspect"),
+		ClientID:        ko.String("api_jwt.client_id"),
+		ClientSecret:    ko.String("api_jwt.client_secret"),
+		IntrospectCache: ko.Duration("api_jwt.introspect_cache"),
 	}
 	if cfg.Enabled {
-		lo.Printf("API accepts bearer access tokens from %s (audiences %v, clients %v)", cfg.Issuer, cfg.Audiences, cfg.Clients)
+		lo.Printf("API accepts bearer access tokens from %s (audiences %v, clients %v, introspection %v)", cfg.Issuer, cfg.Audiences, cfg.Clients, cfg.Introspect)
 	}
 	return cfg
 }

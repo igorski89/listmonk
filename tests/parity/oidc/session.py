@@ -393,9 +393,18 @@ if os.environ.get("OIDC_AUTOLOGIN") == "1":
 # ---------------------------------------------------------------- API bearer tokens (fork only)
 # Self-checking, like auto-login: runs only with OIDC_API_JWT=1 (run.sh then
 # starts listmonk with [api_jwt] for this realm, audience listmonk, client
-# sgnl-mcp). The gateway's flow: a user's token, exchanged (RFC 8693) for
-# one with aud listmonk, sent as Authorization: Bearer.
+# sgnl-mcp, introspection as client listmonk). The gateway's flow: a user's
+# token, exchanged (RFC 8693) for one with aud listmonk, sent as
+# Authorization: Bearer.
 if os.environ.get("OIDC_API_JWT") == "1":
+    def kc_set_enabled(username, enabled):
+        a = kc_admin()
+        adm = KC + "/admin/realms/parity"
+        uid = req("GET", f"{adm}/users?exact=true&username={username}", auth=a)[1][0]["id"]
+        s, _, _ = req("PUT", f"{adm}/users/{uid}", body={"enabled": enabled}, auth=a)
+        assert s == 204, s
+
+    kc_set_enabled("carol", True)
     TOK = REALM + "/protocol/openid-connect/token"
 
     def exchanged(client, secret, user, password):
@@ -424,9 +433,13 @@ if os.environ.get("OIDC_API_JWT") == "1":
     for path in ("/api/settings", "/api/users"):
         s, p = bearer("GET", path, tok)
         assert s == 403, (path, s, p)
-    # No session to end.
+    # No session to end, and the user's own account can't be changed.
     s, p = bearer("POST", "/api/logout", tok)
     assert s == 400, (s, p)
+    for method, path in (("PUT", "/api/profile"), ("POST", "/api/profile/email"),
+                         ("GET", f"/api/users/{alice}/twofa/totp"), ("DELETE", f"/api/users/{alice}/twofa")):
+        s, p = bearer(method, path, tok)
+        assert s == 403 and "bearer" in str(p), (method, path, s, p)
     s, p = bearer("GET", "/api/profile", tok)
     assert s == 200, (s, p)
 
@@ -445,6 +458,18 @@ if os.environ.get("OIDC_API_JWT") == "1":
     for name, (t, want) in refused.items():
         s, p = bearer("GET", "/api/profile", t)
         assert s == want, (name, s, p)
+    # Introspection: disabled in Keycloak, carol's token stops working at
+    # once (it hasn't expired); enabled again, a new token works.
+    ctok = exchanged(*mcp, "carol", "carolpass")[0]
+    s, p = bearer("GET", "/api/profile", ctok)
+    assert s == 200, (s, p)
+    kc_set_enabled("carol", False)
+    s, p = bearer("GET", "/api/profile", ctok)
+    assert s == 401, (s, p)
+    kc_set_enabled("carol", True)
+    s, p = bearer("GET", "/api/profile", exchanged(*mcp, "carol", "carolpass")[0])
+    assert s == 200, (s, p)
+
     # API tokens and sessions still work.
     s, p = api("", "GET", "/api/profile", rec=False)
     assert s == 200, (s, p)

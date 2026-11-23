@@ -35,7 +35,8 @@ params = ""
 # true), with that user's own permissions; users aren't created. Refused:
 # other issuers, audiences or clients (`client_id`, else `azp`), ID and
 # refresh tokens, unknown, disabled or API users. listmonk's own 2FA isn't
-# asked for: the identity provider's login applies. Set only here or in the
+# asked for: the identity provider's login applies. A token can't change
+# the user's own profile, e-mail or 2FA. Set only here or in the
 # environment, e.g. LISTMONK_api_jwt__clients="sgnl-mcp".
 [api_jwt]
 enabled = false
@@ -45,3 +46,11 @@ issuer = ""
 audiences = ["listmonk"]
 # The client the token was issued to must be one of these.
 clients = []
+# Also ask the provider whether each token is still active (RFC 7662), so
+# a user disabled or logged out there loses access at once instead of when
+# the token expires. listmonk authenticates as this client (HTTP Basic).
+introspect = false
+client_id = ""
+client_secret = ""
+# Reuse an "active" answer this long ("0s": ask on every request).
+introspect_cache = "0s"

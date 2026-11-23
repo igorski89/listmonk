@@ -35,6 +35,12 @@ type testIdP struct {
 	srv  *httptest.Server
 	mu   sync.Mutex
 	keys []jose.JSONWebKey
+
+	// Introspection: the answer (inactive tokens), the HTTP status to give
+	// instead (0: 200), and the number of calls.
+	inactive   map[string]bool
+	introStat  int
+	introCalls int
 }
 
 func newTestIdP(t *testing.T) *testIdP {
@@ -47,7 +53,23 @@ func newTestIdP(t *testing.T) *testIdP {
 			"authorization_endpoint":                p.srv.URL + "/auth",
 			"token_endpoint":                        p.srv.URL + "/token",
 			"id_token_signing_alg_values_supported": []string{"RS256", "ES256"},
+			"introspection_endpoint":                p.srv.URL + "/introspect",
 		})
+	})
+	mux.HandleFunc("/introspect", func(w http.ResponseWriter, r *http.Request) {
+		p.mu.Lock()
+		defer p.mu.Unlock()
+		p.introCalls++
+		if id, sec, ok := r.BasicAuth(); !ok || id != "listmonk" || sec != "s%3Acret" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		if p.introStat != 0 {
+			w.WriteHeader(p.introStat)
+			return
+		}
+		tok := r.PostFormValue("token")
+		json.NewEncoder(w).Encode(map[string]any{"active": tok != "" && !p.inactive[tok]})
 	})
 	mux.HandleFunc("/jwks", func(w http.ResponseWriter, r *http.Request) {
 		p.mu.Lock()
@@ -303,6 +325,7 @@ func TestAPIJWTConfig(t *testing.T) {
 		{Enabled: true, Audiences: []string{"listmonk"}, Clients: []string{"x"}},
 		{Enabled: true, Issuer: "https://idp", Clients: []string{"x"}},
 		{Enabled: true, Issuer: "https://idp", Audiences: []string{"listmonk"}},
+		{Enabled: true, Issuer: "https://idp", Audiences: []string{"listmonk"}, Clients: []string{"x"}, Introspect: true, ClientID: "listmonk"},
 	} {
 		if c.Validate() == nil {
 			t.Errorf("%+v: accepted", c)
@@ -351,5 +374,85 @@ audiences = ["listmonk", "other"]
 		if got := ConfigList(ko.Get(key)); !reflect.DeepEqual(got, want) {
 			t.Errorf("%s: %q, want %q", key, got, want)
 		}
+	}
+}
+
+func TestAPIJWTIntrospect(t *testing.T) {
+	p := newTestIdP(t)
+	k := rsaKey(t, "k1")
+	p.publish(k)
+	p.inactive = map[string]bool{}
+	a := newTestAuth(p, true)
+	// The secret has a character that Basic auth form-encodes.
+	a.jwt.cfg.Introspect, a.jwt.cfg.ClientID, a.jwt.cfg.ClientSecret = true, "listmonk", "s:cret"
+	tok := sign(t, k, "JWT", keycloakClaims(p.srv.URL))
+	calls := func() int { p.mu.Lock(); defer p.mu.Unlock(); return p.introCalls }
+	set := func(f func()) { p.mu.Lock(); f(); p.mu.Unlock() }
+
+	if code, who, _ := call(a, "Bearer "+tok, "", "lists:get_all"); code != 200 || who != "alice" {
+		t.Fatalf("active: %d %q", code, who)
+	}
+	// Disabled at the provider: refused at once (no cache).
+	set(func() { p.inactive[tok] = true })
+	if code, _, www := call(a, "Bearer "+tok, "", "lists:get_all"); code != 401 || www == "" {
+		t.Errorf("inactive: %d %q, want 401", code, www)
+	}
+	if n := calls(); n != 2 {
+		t.Errorf("introspection calls = %d, want 2", n)
+	}
+	// Local checks come first: a token from another client isn't sent.
+	other := sign(t, k, "JWT", func() map[string]any { m := keycloakClaims(p.srv.URL); m["azp"] = "x"; return m }())
+	if code, _, _ := call(a, "Bearer "+other, "", "lists:get_all"); code != 401 || calls() != 2 {
+		t.Errorf("other client: %d, calls %d", code, calls())
+	}
+	// Provider errors (and bad listmonk credentials) are 503, not 401.
+	set(func() { p.inactive[tok] = false; p.introStat = http.StatusInternalServerError })
+	if code, _, _ := call(a, "Bearer "+tok, "", "lists:get_all"); code != http.StatusServiceUnavailable {
+		t.Errorf("introspection error: %d, want 503", code)
+	}
+	set(func() { p.introStat = 0 })
+	a.jwt.cfg.ClientSecret = "wrong"
+	if code, _, _ := call(a, "Bearer "+tok, "", "lists:get_all"); code != http.StatusServiceUnavailable {
+		t.Errorf("bad client secret: %d, want 503", code)
+	}
+	a.jwt.cfg.ClientSecret = "s:cret"
+
+	// With a cache, an active answer is reused (and an inactive one isn't
+	// noticed until it runs out).
+	a.jwt.cfg.IntrospectCache = time.Minute
+	before := calls()
+	for i := 0; i < 3; i++ {
+		if code, _, _ := call(a, "Bearer "+tok, "", "lists:get_all"); code != 200 {
+			t.Fatalf("cached %d: %d", i, code)
+		}
+	}
+	if n := calls() - before; n != 1 {
+		t.Errorf("introspection calls with cache = %d, want 1", n)
+	}
+	a.jwt.active = nil
+	set(func() { p.inactive[tok] = true })
+	if code, _, _ := call(a, "Bearer "+tok, "", "lists:get_all"); code != 401 {
+		t.Errorf("inactive after cache: %d, want 401", code)
+	}
+}
+
+func TestNoBearer(t *testing.T) {
+	p := newTestIdP(t)
+	k := rsaKey(t, "k1")
+	p.publish(k)
+	a := newTestAuth(p, true)
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodPut, "/api/profile", nil)
+	req.Header.Set("Authorization", "Bearer "+sign(t, k, "JWT", keycloakClaims(p.srv.URL)))
+	c := e.NewContext(req, httptest.NewRecorder())
+	reached := false
+	err := a.APIMiddleware(NoBearer(func(c *echo.Context) error { reached = true; return nil }))(c)
+	if he, ok := err.(*echo.HTTPError); !ok || he.Code != http.StatusForbidden || reached {
+		t.Errorf("bearer on an own-account route: %v, reached %v", err, reached)
+	}
+	// Other authentication isn't affected.
+	c = e.NewContext(httptest.NewRequest(http.MethodPut, "/api/profile", nil), httptest.NewRecorder())
+	if err := NoBearer(func(c *echo.Context) error { reached = true; return nil })(c); err != nil || !reached {
+		t.Errorf("without a bearer token: %v, reached %v", err, reached)
 	}
 }

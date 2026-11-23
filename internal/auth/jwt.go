@@ -2,12 +2,15 @@ package auth
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/mail"
+	"net/url"
 	"slices"
 	"strings"
 	"sync"
@@ -33,6 +36,17 @@ type APIJWTConfig struct {
 	// Clients: the client the token was issued to (`client_id`, RFC 9068, or
 	// `azp`) must be one of these.
 	Clients []string
+
+	// Introspect: after the local checks, ask the provider (RFC 7662, its
+	// discovery's introspection_endpoint) whether the token is still
+	// active, so a user disabled or logged out there is refused at once,
+	// not when the token expires. Authenticates as ClientID/ClientSecret
+	// (HTTP Basic). An active answer is reused for IntrospectCache (0: ask
+	// on every request).
+	Introspect      bool
+	ClientID        string
+	ClientSecret    string
+	IntrospectCache time.Duration
 }
 
 // ConfigList reads a config list value: a TOML array, or a comma or space
@@ -71,6 +85,8 @@ func (c APIJWTConfig) Validate() error {
 		return errors.New("api_jwt: at least one audience is required")
 	case len(c.Clients) == 0:
 		return errors.New("api_jwt: at least one client is required")
+	case c.Introspect && (c.ClientID == "" || c.ClientSecret == ""):
+		return errors.New("api_jwt: introspect needs client_id and client_secret")
 	}
 	return nil
 }
@@ -81,9 +97,14 @@ func (c APIJWTConfig) Validate() error {
 type jwtAuth struct {
 	cfg APIJWTConfig
 
-	mu       sync.Mutex
-	verifier *oidc.IDTokenVerifier
-	lastErr  time.Time
+	mu            sync.Mutex
+	verifier      *oidc.IDTokenVerifier
+	introspectURL string
+	lastErr       time.Time
+
+	// Introspection: active tokens (SHA-256) and until when to trust that.
+	activeMu sync.Mutex
+	active   map[[32]byte]time.Time
 }
 
 const jwtRetry = 10 * time.Second
@@ -106,6 +127,16 @@ func (j *jwtAuth) getVerifier(ctx context.Context) (*oidc.IDTokenVerifier, error
 	if err != nil {
 		j.lastErr = time.Now()
 		return nil, err
+	}
+	if j.cfg.Introspect {
+		var d struct {
+			URL string `json:"introspection_endpoint"`
+		}
+		if err := p.Claims(&d); err != nil || d.URL == "" {
+			j.lastErr = time.Now()
+			return nil, errors.New("provider has no introspection_endpoint")
+		}
+		j.introspectURL = d.URL
 	}
 	// Audience and client are checked by verify (a token's audience is
 	// listmonk, not the client it was issued to).
@@ -167,7 +198,81 @@ func (j *jwtAuth) verify(ctx context.Context, raw string) (string, error) {
 	if err != nil {
 		return "", errInvalidToken{"no valid e-mail"}
 	}
+
+	if j.cfg.Introspect {
+		ok, err := j.isActive(ctx, raw, tok.Expiry)
+		if err != nil {
+			return "", fmt.Errorf("introspection: %w", err)
+		}
+		if !ok {
+			return "", errInvalidToken{"token not active (introspection)"}
+		}
+	}
 	return strings.ToLower(em.Address), nil
+}
+
+var introspectClient = &http.Client{Timeout: 10 * time.Second}
+
+// isActive asks the provider whether raw is active (RFC 7662), or uses a
+// recent active answer. Inactive answers aren't cached.
+func (j *jwtAuth) isActive(ctx context.Context, raw string, exp time.Time) (bool, error) {
+	key := sha256.Sum256([]byte(raw))
+	now := time.Now()
+	j.activeMu.Lock()
+	until, ok := j.active[key]
+	j.activeMu.Unlock()
+	if ok && now.Before(until) {
+		return true, nil
+	}
+
+	j.mu.Lock()
+	endpoint := j.introspectURL
+	j.mu.Unlock()
+	form := url.Values{"token": {raw}, "token_type_hint": {"access_token"}}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(form.Encode()))
+	if err != nil {
+		return false, err
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Accept", "application/json")
+	// RFC 6749 2.3.1: client id and secret are form-encoded in Basic auth.
+	req.SetBasicAuth(url.QueryEscape(j.cfg.ClientID), url.QueryEscape(j.cfg.ClientSecret))
+	resp, err := introspectClient.Do(req)
+	if err != nil {
+		return false, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return false, fmt.Errorf("status %d", resp.StatusCode)
+	}
+	var out struct {
+		Active bool `json:"active"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&out); err != nil {
+		return false, err
+	}
+	if !out.Active {
+		return false, nil
+	}
+
+	if ttl := j.cfg.IntrospectCache; ttl > 0 {
+		until := now.Add(ttl)
+		if exp.Before(until) {
+			until = exp
+		}
+		j.activeMu.Lock()
+		if j.active == nil || len(j.active) >= 10000 {
+			j.active = map[[32]byte]time.Time{}
+		}
+		for k, t := range j.active {
+			if now.After(t) {
+				delete(j.active, k)
+			}
+		}
+		j.active[key] = until
+		j.activeMu.Unlock()
+	}
+	return true, nil
 }
 
 // isAccessToken tells access tokens from ID and refresh tokens: an RFC 9068
@@ -193,6 +298,28 @@ func isAccessToken(raw string) bool {
 		return false
 	}
 	return p.Typ == "Bearer"
+}
+
+// bearerCtxKey marks a request authenticated by a bearer token.
+const bearerCtxKey = "auth_bearer"
+
+// IsBearer tells whether the request was authenticated by a bearer token.
+func IsBearer(c *echo.Context) bool {
+	b, _ := c.Get(bearerCtxKey).(bool)
+	return b
+}
+
+// NoBearer refuses requests authenticated by a bearer token (403), for
+// the user's own account: profile changes, e-mail change, 2FA. A gateway
+// acting for the user doesn't need them, and a leaked token can't take
+// over the account with them.
+func NoBearer(next echo.HandlerFunc) echo.HandlerFunc {
+	return func(c *echo.Context) error {
+		if IsBearer(c) {
+			return echo.NewHTTPError(http.StatusForbidden, "not allowed with a bearer token")
+		}
+		return next(c)
+	}
 }
 
 // bearerToken returns the token of an `Authorization: Bearer` header.

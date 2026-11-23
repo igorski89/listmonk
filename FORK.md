@@ -199,6 +199,20 @@ recipients 58 ms; fetching all 100k recipients in batches of 1000 4.4 s;
     permissions apply; a super admin's token is super admin. Users aren't
     created. listmonk's 2FA isn't asked for; the identity provider's login
     applies. Each request reads the user from the database, like sessions.
+  - The user's own account can't be changed with a bearer token (403):
+    `PUT /api/profile`, `POST /api/profile/email`, and the 2FA endpoints
+    (`/api/users/:id/twofa*`). A gateway doesn't need them, and a leaked
+    token can't take over the account. Other endpoints follow the user's
+    permissions as usual.
+  - Optional introspection (`introspect = true`, `client_id`,
+    `client_secret`, `introspect_cache`): after the local checks, listmonk
+    asks the provider (RFC 7662, `introspection_endpoint` from discovery,
+    HTTP Basic as that client) whether the token is still active, so a
+    user disabled or logged out there is refused at once instead of when
+    the token expires. An inactive answer is 401; an error or bad listmonk
+    credentials is 503. `introspect_cache` reuses an active answer (default
+    0: ask every time; never past the token's expiry). Keycloak and
+    Authelia both offer it; listmonk can use its own OIDC login client.
   - Responses: an unusable token gets 401 with
     `WWW-Authenticate: Bearer error="invalid_token"` (get a new token); a
     valid token for an unknown, disabled or API user gets 403; an
@@ -214,10 +228,13 @@ recipients 58 ms; fetching all 100k recipients in batches of 1000 4.4 s;
   - Tests: `internal/auth/jwt_test.go` (local provider: valid tokens,
     Keycloak and RFC 9068 shapes, ES256, key rotation, every refusal
     including alg none, HS256 with the public key, a forged key with the
-    same kid, provider down). Harness: `OIDC=1 OIDC_API_JWT=1 run.sh`
-    exchanges real Keycloak tokens (RFC 8693, client `sgnl-mcp` with an
-    audience mapper for `listmonk`; realm in `oidc/realm.json`) and checks
-    permissions and refusals on both backends.
+    same kid, provider down; introspection active/inactive/error/bad
+    credentials/cache; own-account routes; config lists from TOML and env).
+    Harness: `OIDC=1 OIDC_API_JWT=1 run.sh` exchanges real Keycloak tokens
+    (RFC 8693, client `sgnl-mcp` with an audience mapper for `listmonk`;
+    realm in `oidc/realm.json`), with introspection on, and checks
+    permissions, refusals, own-account routes, and a user disabled in
+    Keycloak losing access at once, on both backends.
   - Keycloak: token exchange is enabled per requesting client
     (`standard.token.exchange.enabled`), and an `oidc-audience-mapper`
     puts `listmonk` in `aud`. Authelia (SGNL's fork) issues JWT access

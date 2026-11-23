@@ -245,8 +245,9 @@ func initHTTPHandlers(e *echo.Echo, a *App) {
 		g.POST("/api/tx", pm(a.SendTxMessage, auth.PermTxSend))
 
 		g.GET("/api/profile", a.GetUserProfile)
-		g.PUT("/api/profile", a.UpdateUserProfile)
-		g.POST("/api/profile/email", a.RequestEmailChange)
+		// The user's own account: not with bearer tokens (api_jwt).
+		g.PUT("/api/profile", auth.NoBearer(a.UpdateUserProfile))
+		g.POST("/api/profile/email", auth.NoBearer(a.RequestEmailChange))
 		g.GET("/api/users", pm(a.GetUsers, auth.PermUsersGet))
 		g.GET("/api/users/:id", pm(hasID(a.GetUser), auth.PermUsersGet))
 		g.POST("/api/users", pm(a.CreateUser, auth.PermUsersManage))
@@ -256,9 +257,9 @@ func initHTTPHandlers(e *echo.Echo, a *App) {
 		g.POST("/api/logout", a.Logout)
 
 		// TOTP 2FA endpoints
-		g.GET("/api/users/:id/twofa/totp", hasID(a.GenerateTOTPQR))
-		g.PUT("/api/users/:id/twofa", hasID(a.EnableTOTP))
-		g.DELETE("/api/users/:id/twofa", hasID(a.DisableTOTP))
+		g.GET("/api/users/:id/twofa/totp", auth.NoBearer(hasID(a.GenerateTOTPQR)))
+		g.PUT("/api/users/:id/twofa", auth.NoBearer(hasID(a.EnableTOTP)))
+		g.DELETE("/api/users/:id/twofa", auth.NoBearer(hasID(a.DisableTOTP)))
 
 		g.GET("/api/roles/users", pm(a.GetUserRoles, auth.PermRolesGet))
 		g.GET("/api/roles/lists", pm(a.GeListRoles, auth.PermRolesGet))
