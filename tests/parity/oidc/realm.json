@@ -1,0 +1,47 @@
+{
+  "realm": "parity",
+  "enabled": true,
+  "sslRequired": "none",
+  "accessTokenLifespan": 3600,
+  "groups": [{"name": "editors"}, {"name": "listmgr"}, {"name": "staff"}],
+  "clients": [{
+    "clientId": "listmonk",
+    "enabled": true,
+    "protocol": "openid-connect",
+    "publicClient": false,
+    "clientAuthenticatorType": "client-secret",
+    "secret": "parity-secret",
+    "standardFlowEnabled": true,
+    "directAccessGrantsEnabled": false,
+    "redirectUris": ["http://127.0.0.1:9123/auth/oidc"],
+    "webOrigins": ["http://127.0.0.1:9123"],
+    "attributes": {"post.logout.redirect.uris": "http://127.0.0.1:9123/*", "pkce.code.challenge.method": "S256"},
+    "protocolMappers": [{
+      "name": "groups",
+      "protocol": "openid-connect",
+      "protocolMapper": "oidc-group-membership-mapper",
+      "config": {"claim.name": "groups", "full.path": "false", "id.token.claim": "true",
+                 "access.token.claim": "true", "userinfo.token.claim": "true"}
+    }]
+  }],
+  "users": [
+    {"username": "alice", "email": "alice@example.com", "emailVerified": true, "enabled": true,
+     "firstName": "Alice", "lastName": "Doe", "groups": ["editors"],
+     "credentials": [{"type": "password", "value": "alicepass", "temporary": false}]},
+    {"username": "bob", "email": "Bob@Example.com", "emailVerified": true, "enabled": true,
+     "firstName": "Bob", "lastName": "Roe", "groups": ["listmgr"],
+     "credentials": [{"type": "password", "value": "bobpass", "temporary": false}]},
+    {"username": "carol", "email": "carol@example.com", "emailVerified": true, "enabled": true,
+     "firstName": "Carol", "lastName": "Poe", "groups": [],
+     "credentials": [{"type": "password", "value": "carolpass", "temporary": false}]},
+    {"username": "dave", "email": "dave@example.com", "emailVerified": true, "enabled": true,
+     "firstName": "Dave", "lastName": "Moe", "groups": ["staff"],
+     "credentials": [{"type": "password", "value": "davepass", "temporary": false}]},
+    {"username": "eve", "email": "eve@example.com", "emailVerified": false, "enabled": true,
+     "firstName": "Eve", "lastName": "Loe", "groups": [],
+     "credentials": [{"type": "password", "value": "evepass", "temporary": false}]},
+    {"username": "frank", "email": "frank@example.com", "emailVerified": true, "enabled": true,
+     "firstName": "Frank", "lastName": "Koe", "groups": [],
+     "credentials": [{"type": "password", "value": "frankpass", "temporary": false}]}
+  ]
+}

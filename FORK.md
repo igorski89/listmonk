@@ -19,8 +19,25 @@ roles, password login and sessions (incl. password change logging out
 other sessions), a list-scoped API user, maintenance, and 23 server-rendered
 admin pages (dashboard, lists, campaigns incl. analytics and activity,
 templates, subscribers incl. SQL query, bounces, import, media, users,
-roles, profile, settings). Not covered: OIDC login. Run it also with
+roles, profile, settings). Run it also with
 `VERSION=v7.0.0-beta.2` for the non-final-build startup path.
+
+`OIDC=1` (for both `setup.sh` and `compare.sh`) adds an OIDC session
+(`tests/parity/oidc/`) against a local Keycloak 26.6 (realm in
+`oidc/realm.json`, browser side scripted with urllib). It turns OIDC on
+through the settings API and covers: login of an existing user matched by
+e-mail; unknown user with auto-create off (rejected) and on (created
+without password, e-mail lowercased, default roles); role mapping from an
+array claim (`groups`) and a string claim (`preferred_username`), incl. a
+list role; role sync on a later login (Keycloak group removed, back to the
+default role, list role cleared) that leaves the password of a
+password+OIDC user intact; disabled user and unverified e-mail rejected;
+logout with Keycloak's end-session URL and session removal; deleting a
+role referenced in the OIDC settings (400). Result (2026-11-23): fork on
+Postgres identical to beta.2; fork on SQLite differs only in IDs (the
+Postgres sequence gaps above); the users table matches beta.2's. It tests
+listmonk against Keycloak, not SGNL's own identity provider or its
+settings.
 
 ## Status (2026-11-23 morning)
 

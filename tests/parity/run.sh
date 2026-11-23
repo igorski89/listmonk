@@ -12,6 +12,8 @@
 # Needs two local containers (127.0.0.1 only), started by setup.sh:
 #   lm-parity-pg   (postgres, port 55432)
 #   lm-parity-mail (mailpit, SMTP 51025, API 58025)
+# OIDC=1 adds the OIDC session (oidc/session.py), which needs a third
+# container, lm-parity-kc (Keycloak, port 58080), started by OIDC=1 setup.sh.
 set -euo pipefail
 
 BIN=$(cd "$(dirname "$1")" && pwd)/$(basename "$1")
@@ -65,6 +67,9 @@ for _ in $(seq 50); do
 done
 
 python3 -I "$HERE/session.py" "$TOKEN" "$OUT"
+if [ "${OIDC:-}" = 1 ]; then
+	python3 -I "$HERE/oidc/session.py" "$TOKEN" "$OUT"
+fi
 
 kill "$PID"
 wait "$PID" 2>/dev/null || true
