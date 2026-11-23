@@ -35,6 +35,30 @@ type APIJWTConfig struct {
 	Clients []string
 }
 
+// ConfigList reads a config list value: a TOML array, or a comma or space
+// separated string (environment variables). Empty items are dropped, so an
+// empty array stays empty.
+func ConfigList(v any) []string {
+	var vals []string
+	switch v := v.(type) {
+	case string:
+		vals = []string{v}
+	case []string:
+		vals = v
+	case []any:
+		for _, x := range v {
+			if s, ok := x.(string); ok {
+				vals = append(vals, s)
+			}
+		}
+	}
+	var out []string
+	for _, v := range vals {
+		out = append(out, strings.FieldsFunc(v, func(r rune) bool { return r == ',' || r == ' ' })...)
+	}
+	return out
+}
+
 // Validate reports a config that can't be used safely.
 func (c APIJWTConfig) Validate() error {
 	if !c.Enabled {

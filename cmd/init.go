@@ -1476,18 +1476,7 @@ func initTplFuncs(i *i18n.I18n, u *UrlConfig) template.FuncMap {
 // are a different namespace and can't add keys. Lists can also be given as
 // comma or space separated strings (for the environment).
 func initAPIJWT(ko *koanf.Koanf) auth.APIJWTConfig {
-	list := func(key string) []string {
-		var out []string
-		vals := ko.Strings(key)
-		if len(vals) == 0 {
-			// Environment variables are plain strings.
-			vals = []string{ko.String(key)}
-		}
-		for _, v := range vals {
-			out = append(out, strings.FieldsFunc(v, func(r rune) bool { return r == ',' || r == ' ' })...)
-		}
-		return out
-	}
+	list := func(key string) []string { return auth.ConfigList(ko.Get(key)) }
 	cfg := auth.APIJWTConfig{
 		Enabled:   ko.Bool("api_jwt.enabled"),
 		Issuer:    strings.TrimSpace(ko.String("api_jwt.issuer")),

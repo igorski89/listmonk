@@ -1,6 +1,8 @@
 package auth
 
 import (
+	"reflect"
+
 	"crypto"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -9,6 +11,10 @@ import (
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
+	"github.com/knadh/koanf/parsers/toml"
+	"github.com/knadh/koanf/providers/confmap"
+	"github.com/knadh/koanf/providers/rawbytes"
+	"github.com/knadh/koanf/v2"
 	"io"
 	"log"
 	"net/http"
@@ -318,5 +324,32 @@ func TestAPIJWTProviderDown(t *testing.T) {
 	p.srv.Close()
 	if code, _, _ := call(a, tok, "", "lists:get_all"); code != http.StatusServiceUnavailable {
 		t.Errorf("provider down: %d, want 503", code)
+	}
+}
+
+// [api_jwt] lists come from TOML arrays or environment strings; an empty
+// array must stay empty, so the startup check refuses it.
+func TestConfigList(t *testing.T) {
+	ko := koanf.New(".")
+	if err := ko.Load(rawbytes.Provider([]byte(`[api_jwt]
+clients = []
+audiences = ["listmonk", "other"]
+`)), toml.Parser()); err != nil {
+		t.Fatal(err)
+	}
+	if err := ko.Load(confmap.Provider(map[string]any{"env.one": "sgnl-mcp", "env.many": "a, b c", "env.empty": ""}, "."), nil); err != nil {
+		t.Fatal(err)
+	}
+	for key, want := range map[string][]string{
+		"api_jwt.clients":   nil,
+		"api_jwt.audiences": {"listmonk", "other"},
+		"api_jwt.missing":   nil,
+		"env.one":           {"sgnl-mcp"},
+		"env.many":          {"a", "b", "c"},
+		"env.empty":         nil,
+	} {
+		if got := ConfigList(ko.Get(key)); !reflect.DeepEqual(got, want) {
+			t.Errorf("%s: %q, want %q", key, got, want)
+		}
 	}
 }
