@@ -36,8 +36,13 @@ logout with Keycloak's end-session URL and session removal; deleting a
 role referenced in the OIDC settings (400). Result (2026-11-23): fork on
 Postgres identical to beta.2; fork on SQLite differs only in IDs (the
 Postgres sequence gaps above); the users table matches beta.2's. It tests
-listmonk against Keycloak, not SGNL's own identity provider or its
-settings.
+listmonk against a local Keycloak. SGNL also runs Keycloak 26.x: the
+`listmonk` client in `sgnl/keycloak/realm.yaml` is likewise confidential,
+PKCE S256, with a `groups` scope. Its listmonk settings
+(`sgnl/bin/sgnl-listmonk-setup`) use auto_create_users = false and no role
+mapping, a case the session covers. Not tested: SGNL's browser-flow
+override (`sgnl-apps`: sgnl_users group + second factor); that happens
+in Keycloak, before listmonk sees the callback.
 
 ## Status (2026-11-23 morning)
 
@@ -49,9 +54,18 @@ store interfaces -> parity harness -> Postgres store -> app on the store
 
 Not done / next:
 - Review of the deviations and SQLite differences below.
-- Deploy-side changes for SGNL (Kamal config, backup of the SQLite file,
-  removing the Postgres accessory) need igor's go; nothing was changed on
-  the server.
+- Deploy-side changes for SGNL need igor's go; nothing was changed on
+  the server. They are:
+  - the Kamal config;
+  - backup of the SQLite file (`VACUUM INTO`, see below);
+  - removing the Postgres accessory;
+  - `bin/sgnl-listmonk-setup`, which writes the settings (root_url, OIDC,
+    from_email, SMTP/SES, bounce.ses) by sending Postgres SQL to the
+    Postgres container via `docker exec ... psql` (jsonb operators,
+    dollar quoting). It needs a SQLite version, or better, a move to the
+    settings API (PUT /api/settings; send "" for unchanged secrets);
+  - `bin/sgnl-backup-restore-test-listmonk` and `bin/sgnl-breakglass-export`,
+    which assume Postgres.
 - SQLite migrations after v7.0.0 (none yet); rebase onto the v7.0.0 tag
   when it ships.
 - Data move Postgres -> SQLite: not built (SGNL has no data to move).
