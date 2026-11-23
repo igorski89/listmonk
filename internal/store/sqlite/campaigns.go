@@ -19,6 +19,7 @@ type campaignRow struct {
 	models.Campaign
 	Tags        jsonStrings    `db:"tags"`
 	MediaIDs    jsonInt64s     `db:"media_id"`
+	ListUUIDs   jsonStrings    `db:"list_uuids"`
 	ArchiveMeta types.JSONText `db:"archive_meta"`
 }
 
@@ -26,6 +27,7 @@ func (r campaignRow) model() models.Campaign {
 	c := r.Campaign
 	c.Tags = []string(r.Tags)
 	c.MediaIDs = []int64(r.MediaIDs)
+	c.ListUUIDs = []string(r.ListUUIDs)
 	c.ArchiveMeta = []byte(r.ArchiveMeta)
 	return c
 }
@@ -50,6 +52,11 @@ func tsOrNull(t null.Time) any {
 }
 
 // campListsJSON is a campaign's lists as JSON (query-campaigns).
+// campListUUIDs is the UUIDs of a campaign's (existing) lists, by list ID:
+// upstream's list_uuids, for signed opt-in links.
+const campListUUIDs = `(SELECT json_group_array(l.uuid ORDER BY l.id) FROM campaign_lists cl JOIN lists l ON l.id = cl.list_id
+	WHERE cl.campaign_id = c.id) AS list_uuids`
+
 const campListsJSON = `CAST(COALESCE((SELECT json_group_array(json_object('id', COALESCE(cl.list_id, 0), 'name', cl.list_name))
 	FROM campaign_lists cl WHERE cl.campaign_id = c.id), '[]') AS BLOB)`
 
@@ -121,7 +128,7 @@ func (s campaigns) Query(ctx context.Context, f store.CampaignFilter, srt store.
 
 func (s campaigns) Get(ctx context.Context, ref store.CampaignRef, tpl store.TemplateKind) (models.Campaign, error) {
 	var rows []campaignRow
-	if err := s.r.SelectContext(ctx, &rows, `SELECT c.*,
+	if err := s.r.SelectContext(ctx, &rows, `SELECT c.*, `+campListUUIDs+`,
 		COALESCE(t.body, (SELECT body FROM templates WHERE is_default = true LIMIT 1), '') AS template_body
 		FROM campaigns c LEFT JOIN templates t ON (CASE WHEN ?4 = 'default' THEN t.id = c.template_id ELSE t.id = c.archive_template_id END)
 		WHERE CASE WHEN ?1 > 0 THEN c.id = ?1 WHEN ?3 != '' THEN c.archive_slug = ?3 ELSE c.uuid = ?2 END`,
@@ -140,7 +147,7 @@ func (s campaigns) Get(ctx context.Context, ref store.CampaignRef, tpl store.Tem
 
 func (s campaigns) GetForPreview(ctx context.Context, id, tplID int) (models.Campaign, error) {
 	var row campaignRow
-	if err := s.r.GetContext(ctx, &row, `SELECT c.*, COALESCE(t.body, '') AS template_body, `+campListsJSON+` AS lists
+	if err := s.r.GetContext(ctx, &row, `SELECT c.*, COALESCE(t.body, '') AS template_body, `+campListsJSON+` AS lists, `+campListUUIDs+`
 		FROM campaigns c LEFT JOIN templates t ON (t.id = (CASE WHEN ?2 = 0 THEN c.template_id ELSE ?2 END))
 		WHERE c.id = ?1`, id, tplID); err != nil {
 		return models.Campaign{}, notFound(err)
@@ -150,7 +157,7 @@ func (s campaigns) GetForPreview(ctx context.Context, id, tplID int) (models.Cam
 
 func (s campaigns) Archived(ctx context.Context, listUUID string, p store.Page) (models.Campaigns, int, error) {
 	var rows []campaignRow
-	if err := s.r.SelectContext(ctx, &rows, `SELECT COUNT(*) OVER () AS total, c.*,
+	if err := s.r.SelectContext(ctx, &rows, `SELECT COUNT(*) OVER () AS total, c.*, `+campListUUIDs+`,
 		COALESCE(t.body, (SELECT body FROM templates WHERE is_default = true LIMIT 1), '') AS template_body
 		FROM campaigns c LEFT JOIN templates t ON (t.id = c.archive_template_id)
 		WHERE c.archive = true AND c.type = 'regular' AND c.status IN ('running', 'paused', 'finished')
@@ -392,7 +399,8 @@ func (s campaigns) Next(ctx context.Context, inProgress []store.CampaignProgress
 		var rows []campaignRow
 		if err := tx.SelectContext(ctx, &rows, `SELECT c.*,
 			COALESCE(t.body, (SELECT body FROM templates WHERE is_default = true LIMIT 1), '') AS template_body,
-			(SELECT json_group_array(media_id) FROM campaign_media WHERE campaign_id = c.id AND media_id IS NOT NULL) AS media_id
+			(SELECT json_group_array(media_id) FROM campaign_media WHERE campaign_id = c.id AND media_id IS NOT NULL) AS media_id,
+			`+campListUUIDs+`
 			FROM campaigns c LEFT JOIN templates t ON (t.id = c.template_id)
 			WHERE (c.status = 'running' OR (c.status = 'scheduled' AND ?1 >= c.send_at))
 			AND c.id NOT IN (SELECT value FROM json_each(?2))`, t, ints(ids)); err != nil {

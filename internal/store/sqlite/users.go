@@ -195,9 +195,21 @@ func (s users) UpdateProfile(ctx context.Context, id int, u auth.User) error {
 		hash = h
 	}
 	res, err := s.w.ExecContext(ctx, `UPDATE users SET name = ?2,
-		email = (CASE WHEN password_login THEN ?3 ELSE email END),
-		password = (CASE WHEN ?4 THEN COALESCE(?5, password) ELSE NULL END)
-		WHERE id = ?1`, id, u.Name, u.Email, u.PasswordLogin, hash)
+		password = (CASE WHEN ?3 THEN COALESCE(?4, password) ELSE NULL END)
+		WHERE id = ?1`, id, u.Name, u.PasswordLogin, hash)
+	if err != nil {
+		return wrap(err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return store.ErrNotFound
+	}
+	return nil
+}
+
+func (s users) UpdateEmail(ctx context.Context, id int, oldEmail, email string) error {
+	res, err := s.w.ExecContext(ctx, `UPDATE users SET email = ?3, updated_at = ?4
+		WHERE id = ?1 AND email = ?2 AND status = 'enabled' AND password_login = true AND type = 'user'`,
+		id, oldEmail, email, now())
 	if err != nil {
 		return wrap(err)
 	}

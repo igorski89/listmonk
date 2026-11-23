@@ -37,8 +37,38 @@ func V7_0_0(db *sqlx.DB, fs stuffbin.FileSystem, ko *koanf.Koanf, lo *log.Logger
 
         DELETE FROM settings WHERE key IN ('bounce.sendgrid_enabled', 'bounce.sendgrid_key');
 
+        -- Consolidate upload settings from many individualkeys into maps.
+        INSERT INTO settings (key, value)
+        SELECT 'upload.filesystem', '{"upload_path": "uploads", "upload_uri": "/uploads"}'::JSONB ||
+            COALESCE(JSONB_OBJECT_AGG(SUBSTR(key, 19), value), '{}'::JSONB)
+        FROM settings WHERE key LIKE 'upload.filesystem.%'
+        ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value || settings.value;
+
+        DELETE FROM settings WHERE key LIKE 'upload.filesystem.%';
+
+        INSERT INTO settings (key, value)
+        SELECT 'upload.s3', '{"url": "https://ap-south-1.s3.amazonaws.com", "public_url": "", "aws_access_key_id": "", "aws_secret_access_key": "", "aws_default_region": "ap-south-1", "bucket": "", "bucket_domain": "", "bucket_path": "/", "bucket_type": "public", "expiry": "167h"}'::JSONB ||
+            COALESCE(JSONB_OBJECT_AGG(SUBSTR(key, 11), value), '{}'::JSONB)
+        FROM settings WHERE key LIKE 'upload.s3.%'
+        ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value || settings.value;
+
+        DELETE FROM settings WHERE key LIKE 'upload.s3.%';
+
+        -- Maximum upload size in KB. Preserve existing values.
+        INSERT INTO settings (key, value) VALUES ('upload.max_file_size', '25000')
+        ON CONFLICT (key) DO NOTHING;
+
         -- Login session duration.
         INSERT INTO settings (key, value) VALUES ('security.session_duration', '"7d"')
+        ON CONFLICT (key) DO NOTHING;
+
+        -- Signed links.
+        INSERT INTO settings (key, value) VALUES ('security.signed_links', '{"enabled": false, "ttl": "120d"}')
+        ON CONFLICT (key) DO NOTHING;
+
+        -- Internal secret key for signing links.
+        INSERT INTO settings (key, value)
+        VALUES ('internal.secret_key', TO_JSONB(ENCODE(GEN_RANDOM_BYTES(32), 'hex')))
         ON CONFLICT (key) DO NOTHING;
 
         -- Add exclude_from_default field to all SMTP servers.
@@ -77,6 +107,10 @@ func V7_0_0(db *sqlx.DB, fs stuffbin.FileSystem, ko *koanf.Koanf, lo *log.Logger
         -- OIDC claim mapping.
         UPDATE settings SET value = JSONB_SET(value, '{roles}', '[]'::JSONB)
         WHERE key = 'security.oidc' AND NOT (value ? 'roles');
+
+        -- Enable the public subscription API.
+        INSERT INTO settings (key, value) VALUES ('app.enable_public_subscription_api', 'false')
+        ON CONFLICT (key) DO NOTHING;
 	`); err != nil {
 		return err
 	}

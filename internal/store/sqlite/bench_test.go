@@ -53,7 +53,7 @@ func TestScale(t *testing.T) {
 				rows = append(rows, store.SubscriberInput{Email: fmt.Sprintf("u%d@example.com", j), Name: fmt.Sprintf("User %d", j),
 					Attribs: models.JSON{"city": []string{"Berlin", "Paris", "Rome"}[j%3]}})
 			}
-			if err := st.Subscribers().Import(ctx, rows, store.ImportOptions{Mode: store.ImportSubscribe, ListIDs: []int{l.ID},
+			if _, err := st.Subscribers().Import(ctx, rows, store.ImportOptions{Mode: store.ImportSubscribe, ListIDs: []int{l.ID},
 				SubscriptionStatus: "confirmed", Permitted: store.ListScope{All: true}}); err != nil {
 				return err
 			}

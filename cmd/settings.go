@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/mail"
 	"net/url"
@@ -80,7 +81,7 @@ func maskSettings(s *models.Settings) {
 		s.Messengers[i].Password = strings.Repeat(pwdMask, utf8.RuneCountInString(s.Messengers[i].Password))
 	}
 
-	s.UploadS3AwsSecretAccessKey = strings.Repeat(pwdMask, utf8.RuneCountInString(s.UploadS3AwsSecretAccessKey))
+	s.UploadS3.AwsSecretAccessKey = strings.Repeat(pwdMask, utf8.RuneCountInString(s.UploadS3.AwsSecretAccessKey))
 	s.BounceSendgrid.Key = strings.Repeat(pwdMask, utf8.RuneCountInString(s.BounceSendgrid.Key))
 	s.BounceAzure.SharedSecret = strings.Repeat(pwdMask, utf8.RuneCountInString(s.BounceAzure.SharedSecret))
 	s.BouncePostmark.Password = strings.Repeat(pwdMask, utf8.RuneCountInString(s.BouncePostmark.Password))
@@ -150,6 +151,10 @@ func (a *App) UpdateSettings(c *echo.Context) error {
 	// Unmarshal and marshal the fields once to sanitize the settings blob.
 	var set models.Settings
 	if err := c.Bind(&set); err != nil {
+		return err
+	}
+
+	if err := validateUploadMaxFileSize(set.UploadMaxFileSize); err != nil {
 		return err
 	}
 
@@ -306,8 +311,8 @@ func (a *App) UpdateSettings(c *echo.Context) error {
 	}
 
 	// S3 password?
-	if set.UploadS3AwsSecretAccessKey == "" {
-		set.UploadS3AwsSecretAccessKey = cur.UploadS3AwsSecretAccessKey
+	if set.UploadS3.AwsSecretAccessKey == "" {
+		set.UploadS3.AwsSecretAccessKey = cur.UploadS3.AwsSecretAccessKey
 	}
 	if set.BounceSendgrid.Key == "" {
 		set.BounceSendgrid.Key = cur.BounceSendgrid.Key
@@ -398,10 +403,25 @@ func (a *App) UpdateSettingsByKey(c *echo.Context) error {
 		return echo.NewHTTPError(http.StatusBadRequest, a.i18n.T("globals.messages.invalidData"))
 	}
 
+	// internal.secret_key cannot be updated.
+	if key == "internal.secret_key" {
+		return echo.NewHTTPError(http.StatusForbidden, "`internal.secret_key` cannot be updated")
+	}
+
 	// Read the raw JSON body as the value.
 	var b json.RawMessage
 	if err := c.Bind(&b); err != nil {
 		return err
+	}
+
+	if key == "upload.max_file_size" {
+		var size int64
+		if err := json.Unmarshal(b, &size); err != nil {
+			return echo.NewHTTPError(http.StatusBadRequest, a.i18n.T("globals.messages.invalidData"))
+		}
+		if err := validateUploadMaxFileSize(size); err != nil {
+			return err
+		}
 	}
 
 	// Validate OIDC defaults and mappings on both settings endpoints.
@@ -422,6 +442,14 @@ func (a *App) UpdateSettingsByKey(c *echo.Context) error {
 	}
 
 	return a.handleSettingsRestart(c)
+}
+
+// validateUploadMaxFileSize ensures the KB limit can be converted to bytes safely.
+func validateUploadMaxFileSize(size int64) error {
+	if size < 1 || size > math.MaxInt64/1024 {
+		return echo.NewHTTPError(http.StatusBadRequest, "upload.max_file_size must be a positive integer in KB within the supported byte range")
+	}
+	return nil
 }
 
 // validateOIDCSettings validates default roles and claim mapping.

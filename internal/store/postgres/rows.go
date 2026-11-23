@@ -17,14 +17,16 @@ import (
 
 type campaignRow struct {
 	models.Campaign
-	Tags     pq.StringArray `db:"tags"`
-	MediaIDs pq.Int64Array  `db:"media_id"`
+	Tags      pq.StringArray `db:"tags"`
+	MediaIDs  pq.Int64Array  `db:"media_id"`
+	ListUUIDs pq.StringArray `db:"list_uuids"`
 }
 
 func (r campaignRow) model() models.Campaign {
 	c := r.Campaign
 	c.Tags = []string(r.Tags)
 	c.MediaIDs = []int64(r.MediaIDs)
+	c.ListUUIDs = []string(r.ListUUIDs)
 	return c
 }
 

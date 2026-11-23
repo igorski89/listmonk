@@ -1,6 +1,6 @@
 # Upstream query -> store method
 
-Generated from models/queries.go at v7.0.0-beta.2: 132 queries, all mapped (checked by script).
+Generated from models/queries.go at v7.0.0-beta.2: 133 queries, all mapped (checked by script).
 
 Other database access outside models.Queries:
 
@@ -132,6 +132,7 @@ Other database access outside models.Queries:
 | `create-user` | Users.Create |
 | `update-user` | Users.Update |
 | `update-user-profile` | Users.UpdateProfile |
+| `update-user-email` | Users.UpdateEmail |
 | `update-user-login` | Users.RecordLogin |
 | `set-user-twofa` | Users.SetTwoFA |
 | `delete-users` | Users.Delete |

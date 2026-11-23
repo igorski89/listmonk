@@ -27,6 +27,7 @@ import (
 	"github.com/knadh/listmonk/internal/messenger/email"
 	lmstore "github.com/knadh/listmonk/internal/store"
 	"github.com/knadh/listmonk/internal/subimporter"
+	"github.com/knadh/listmonk/internal/throttle"
 	"github.com/knadh/listmonk/models"
 	"github.com/knadh/paginator/v2"
 	"github.com/knadh/stuffbin"
@@ -55,6 +56,9 @@ type App struct {
 
 	about         about
 	fnOptinNotify func(models.Subscriber, []int) (int, error)
+
+	// Used for throttling actions (eg: sending confirmation emails) to prevent abuse.
+	throttle *throttle.Throttle
 
 	// Precomputed raw JSON of i18n strings for HTML admin pages.
 	adminI18nJS json.RawMessage
@@ -284,6 +288,8 @@ func main() {
 		log:        lo,
 		events:     evStream,
 		bufLog:     bufLog,
+
+		throttle: throttle.New(10*time.Minute, 5000),
 
 		pg: paginator.New(paginator.Opt{
 			DefaultPerPage: 20,

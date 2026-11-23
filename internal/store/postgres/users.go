@@ -69,7 +69,18 @@ func (s users) Update(ctx context.Context, id int, u auth.User) error {
 }
 
 func (s users) UpdateProfile(ctx context.Context, id int, u auth.User) error {
-	res, err := s.q.UpdateUserProfile.ExecContext(ctx, id, u.Name, u.Email, u.PasswordLogin, u.Password)
+	res, err := s.q.UpdateUserProfile.ExecContext(ctx, id, u.Name, u.PasswordLogin, u.Password)
+	if err != nil {
+		return wrap(err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return store.ErrNotFound
+	}
+	return nil
+}
+
+func (s users) UpdateEmail(ctx context.Context, id int, oldEmail, email string) error {
+	res, err := s.q.UpdateUserEmail.ExecContext(ctx, id, oldEmail, email)
 	if err != nil {
 		return wrap(err)
 	}

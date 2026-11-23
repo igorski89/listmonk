@@ -40,6 +40,12 @@ func (s schema) Install(ctx context.Context, version string, env store.Migration
 		return wrap(err)
 	}
 
+	// Generate the installation's secret key (URL signing).
+	if _, err := s.db.ExecContext(ctx, `UPDATE settings SET value = TO_JSONB(ENCODE(GEN_RANDOM_BYTES(32), 'hex'))
+		WHERE key = 'internal.secret_key'`); err != nil {
+		return wrap(err)
+	}
+
 	// Insert the current migration version.
 	return s.recordVersion(ctx, version)
 }

@@ -182,9 +182,12 @@ type SubscriberStore interface {
 
 	// Import upserts one batch of subscribers atomically: all rows or
 	// none (the importer stops at the first failed batch, as today).
-	// Existing subscribers are matched by e-mail. Updating the lists'
-	// updated_at after an import belongs to the list store.
-	Import(ctx context.Context, rows []SubscriberInput, o ImportOptions) error
+	// Existing subscribers are matched by e-mail. In subscribe mode an
+	// existing subscriber with no subscription to a list in o.Permitted is
+	// left unchanged and its e-mail returned in skipped (upstream: import
+	// can't update subscribers of lists the user can't manage). Updating
+	// the lists' updated_at after an import belongs to the list store.
+	Import(ctx context.Context, rows []SubscriberInput, o ImportOptions) (skipped []string, err error)
 
 	// Blocklist blocklists subscribers and marks all their subscriptions
 	// unsubscribed. The ...ByFilter methods here and in
@@ -233,8 +236,8 @@ type SubscriptionStore interface {
 	UnsubscribeByFilter(ctx context.Context, f SubscriberFilter, listIDs []int) (int, error)
 
 	// ConfirmOptin confirms a subscriber's subscriptions to the given
-	// lists, merging meta (IP, time) into their meta. From upstream
-	// v7.0.0 only "unconfirmed" ones change; v7.0.0-beta.2 confirms any.
+	// lists, merging meta (IP, time) into their meta. Only "unconfirmed"
+	// ones change: an old opt-in link can't resubscribe (upstream v7.0.0).
 	ConfirmOptin(ctx context.Context, subUUID string, listUUIDs []string, meta models.JSON) error
 
 	// DeleteUnconfirmed deletes unconfirmed subscriptions to double opt-in

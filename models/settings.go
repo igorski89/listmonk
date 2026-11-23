@@ -20,6 +20,7 @@ type Settings struct {
 	AppFromEmail                  []string `json:"app.from_email"`
 	AppNotifyEmails               []string `json:"app.notify_emails"`
 	EnablePublicSubPage           bool     `json:"app.enable_public_subscription_page"`
+	EnablePublicSubAPI            bool     `json:"app.enable_public_subscription_api"`
 	EnablePublicArchive           bool     `json:"app.enable_public_archive"`
 	EnablePublicArchiveRSSContent bool     `json:"app.enable_public_archive_rss_content"`
 	ShowOptinPage                 bool     `json:"app.show_optin_page"`
@@ -81,21 +82,30 @@ type Settings struct {
 
 	SecuritySessionDuration string   `json:"security.session_duration"`
 	SecurityTrustedURLs     []string `json:"security.trusted_urls"`
+	SecuritySignedLinks     struct {
+		Enabled bool   `json:"enabled"`
+		TTL     string `json:"ttl"`
+	} `json:"security.signed_links"`
 
-	UploadProvider             string   `json:"upload.provider"`
-	UploadExtensions           []string `json:"upload.extensions"`
-	UploadFilesystemUploadPath string   `json:"upload.filesystem.upload_path"`
-	UploadFilesystemUploadURI  string   `json:"upload.filesystem.upload_uri"`
-	UploadS3URL                string   `json:"upload.s3.url"`
-	UploadS3PublicURL          string   `json:"upload.s3.public_url"`
-	UploadS3AwsAccessKeyID     string   `json:"upload.s3.aws_access_key_id"`
-	UploadS3AwsDefaultRegion   string   `json:"upload.s3.aws_default_region"`
-	UploadS3AwsSecretAccessKey string   `json:"upload.s3.aws_secret_access_key,omitempty"`
-	UploadS3Bucket             string   `json:"upload.s3.bucket"`
-	UploadS3BucketDomain       string   `json:"upload.s3.bucket_domain"`
-	UploadS3BucketPath         string   `json:"upload.s3.bucket_path"`
-	UploadS3BucketType         string   `json:"upload.s3.bucket_type"`
-	UploadS3Expiry             string   `json:"upload.s3.expiry"`
+	UploadProvider    string   `json:"upload.provider"`
+	UploadMaxFileSize int64    `json:"upload.max_file_size"`
+	UploadExtensions  []string `json:"upload.extensions"`
+	UploadFilesystem  struct {
+		UploadPath string `json:"upload_path"`
+		UploadURI  string `json:"upload_uri"`
+	} `json:"upload.filesystem"`
+	UploadS3 struct {
+		URL                string `json:"url"`
+		PublicURL          string `json:"public_url"`
+		AwsAccessKeyID     string `json:"aws_access_key_id"`
+		AwsDefaultRegion   string `json:"aws_default_region"`
+		AwsSecretAccessKey string `json:"aws_secret_access_key,omitempty"`
+		Bucket             string `json:"bucket"`
+		BucketDomain       string `json:"bucket_domain"`
+		BucketPath         string `json:"bucket_path"`
+		BucketType         string `json:"bucket_type"`
+		Expiry             string `json:"expiry"`
+	} `json:"upload.s3"`
 
 	SMTP []struct {
 		Name               string              `json:"name"`

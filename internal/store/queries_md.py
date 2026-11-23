@@ -41,7 +41,7 @@ M = {
 'get-settings':'Settings.All','update-settings':'Settings.Update','update-settings-by-key':'Settings.Set',
 'record-bounce':'Bounces.Record','query-bounces':'Bounces.Query, Bounces.Get','blocklist-bounced-subscribers':'Bounces.BlocklistSubscribers','delete-bounces':'Bounces.Delete',
 'delete-bounces-by-subscriber':'Bounces.DeleteForSubscriber','get-db-info':'Schema.Info',
-'create-user':'Users.Create','update-user':'Users.Update','update-user-profile':'Users.UpdateProfile','update-user-login':'Users.RecordLogin','set-user-twofa':'Users.SetTwoFA',
+'create-user':'Users.Create','update-user':'Users.Update','update-user-profile':'Users.UpdateProfile','update-user-email':'Users.UpdateEmail','update-user-login':'Users.RecordLogin','set-user-twofa':'Users.SetTwoFA',
 'delete-users':'Users.Delete','get-users':'Users.Query','get-user':'Users.Get','get-api-tokens':'— unused upstream, dropped','login-user':'Users.Login','delete-user-sessions':'Users.DeleteSessions',
 'create-role':'Roles.CreateUserRole, Roles.CreateListRole','get-user-roles':'Roles.UserRoles, Roles.UserRole','get-list-roles':'Roles.ListRoles','update-role':'Roles.UpdateUserRole, Roles.UpdateListRole',
 'delete-role':'Roles.Delete','upsert-list-permissions':'Roles.CreateListRole, Roles.UpdateListRole','delete-list-permission':'Roles.DeleteListPermission',

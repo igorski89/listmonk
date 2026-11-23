@@ -58,11 +58,16 @@ type UserStore interface {
 	// apart with a lookup on that failure path only.)
 	Update(ctx context.Context, id int, u auth.User) error
 
-	// UpdateProfile is a user editing themselves; only u's Name, Email
-	// (applied only to password-login users), PasswordLogin and Password
-	// (empty = keep; PasswordLogin=false clears it) are used. ErrNotFound
-	// if missing.
+	// UpdateProfile is a user editing themselves; only u's Name,
+	// PasswordLogin and Password (empty = keep; PasswordLogin=false clears
+	// it) are used. E-mail changes go through UpdateEmail after
+	// verification. ErrNotFound if missing.
 	UpdateProfile(ctx context.Context, id int, u auth.User) error
+
+	// UpdateEmail sets a verified new e-mail: only if the user still has
+	// oldEmail and is an enabled password-login user (type user).
+	// ErrNotFound otherwise; ConflictError if the e-mail is taken.
+	UpdateEmail(ctx context.Context, id int, oldEmail, email string) error
 
 	// Login returns the enabled, password-login user whose password
 	// matches and records the login time; ErrNotFound otherwise (unknown

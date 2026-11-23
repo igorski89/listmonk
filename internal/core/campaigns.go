@@ -45,7 +45,8 @@ func (c *Core) GetArchivedCampaign(id int, uuid, archiveSlug string) (models.Cam
 		return out, err
 	}
 
-	if !out.Archive {
+	if !out.Archive || out.Type != models.CampaignTypeRegular ||
+		(out.Status != models.CampaignStatusRunning && out.Status != models.CampaignStatusPaused && out.Status != models.CampaignStatusFinished) {
 		return models.Campaign{}, echo.NewHTTPError(http.StatusBadRequest,
 			c.i18n.Ts("globals.messages.notFound", "name", "{globals.terms.campaign}"))
 	}

@@ -456,6 +456,9 @@ func testSubscriptions(t *testing.T, st store.Store, fx Fixtures) {
 	// doesn't map.)
 	must(t, SS.ConfirmOptin(ctx, f.anna.UUID, []string{f.privSingle.UUID}, models.JSON{"confirm_ip": "1.2.3.4"}))
 	eq(t, subStatuses(t, st, f.anna.ID)[f.privSingle.ID], "confirmed", "confirm optin")
+	must(t, SS.Unsubscribe(ctx, []int{f.anna.ID}, []int{f.privSingle.ID}, nil))
+	must(t, SS.ConfirmOptin(ctx, f.anna.UUID, []string{f.privSingle.UUID}, models.JSON{}))
+	eq(t, subStatuses(t, st, f.anna.ID)[f.privSingle.ID], "unsubscribed", "opt-in doesn't resubscribe")
 
 	// Unconfirmed subscriptions to double opt-in lists created before a time.
 	must(t, SS.Add(ctx, []int{f.dan.ID}, []int{f.pubDouble.ID}, "unconfirmed"))
@@ -474,10 +477,12 @@ func testImport(t *testing.T, st store.Store) {
 	opt := store.ImportOptions{Mode: store.ImportSubscribe, ListIDs: []int{f.pubSingle.ID}, SubscriptionStatus: "confirmed", Permitted: all}
 
 	// New subscribers, and an existing one without overwrite.
-	must(t, S.Import(ctx, []store.SubscriberInput{
+	skipped, err := S.Import(ctx, []store.SubscriberInput{
 		{Email: "new@example.com", Name: "New", Attribs: models.JSON{"a": 1}},
 		{Email: "anna@example.com", Name: "Anna Imported", Attribs: models.JSON{"city": "Rome"}},
-	}, opt))
+	}, opt)
+	must(t, err)
+	eq(t, len(skipped), 0, "nothing skipped with all lists permitted")
 	s, err := S.Get(ctx, store.SubscriberRef{Email: "new@example.com"})
 	must(t, err)
 	eq(t, s.Status, "enabled", "imported status")
@@ -488,15 +493,17 @@ func testImport(t *testing.T, st store.Store) {
 
 	// Overwrite user info and subscription status.
 	opt.OverwriteUserInfo, opt.OverwriteSubStatus, opt.SubscriptionStatus, opt.ListIDs = true, true, "unconfirmed", []int{f.privSingle.ID}
-	must(t, S.Import(ctx, []store.SubscriberInput{{Email: "ben@example.com", Name: "Ben Imported", Attribs: models.JSON{"city": "Rome"}}}, opt))
+	_, err = S.Import(ctx, []store.SubscriberInput{{Email: "ben@example.com", Name: "Ben Imported", Attribs: models.JSON{"city": "Rome"}}}, opt)
+	must(t, err)
 	s, _ = S.Get(ctx, store.SubscriberRef{ID: f.ben.ID})
 	eq(t, s.Name, "Ben Imported", "overwrite name")
 	eq(t, s.Attribs, models.JSON{"city": "Rome"}, "overwrite attribs")
 	eq(t, subStatuses(t, st, f.ben.ID)[f.privSingle.ID], "unconfirmed", "overwrite subscription status")
 
 	// Blocklist mode.
-	must(t, S.Import(ctx, []store.SubscriberInput{{Email: "cara@example.com", Name: "Cara"}, {Email: "zed@example.com", Name: "Zed"}},
-		store.ImportOptions{Mode: store.ImportBlocklist, Permitted: all}))
+	_, err = S.Import(ctx, []store.SubscriberInput{{Email: "cara@example.com", Name: "Cara"}, {Email: "zed@example.com", Name: "Zed"}},
+		store.ImportOptions{Mode: store.ImportBlocklist, Permitted: all})
+	must(t, err)
 	for _, e := range []string{"cara@example.com", "zed@example.com"} {
 		s, err = S.Get(ctx, store.SubscriberRef{Email: e})
 		must(t, err)
@@ -506,8 +513,34 @@ func testImport(t *testing.T, st store.Store) {
 		eq(t, st, "unsubscribed", "blocklist import unsubscribes")
 	}
 
+	// Limited to some lists (upstream v7.0.0): existing subscribers on none
+	// of them are skipped and left alone; new ones are imported.
+	scoped := store.ImportOptions{Mode: store.ImportSubscribe, ListIDs: []int{f.pubSingle.ID}, SubscriptionStatus: "confirmed",
+		OverwriteUserInfo: true, Permitted: store.ListScope{IDs: []int{f.pubDouble.ID}}}
+	skipped, err = S.Import(ctx, []store.SubscriberInput{
+		{Email: "ben@example.com", Name: "Ben Scoped"},
+		{Email: "cara@example.com", Name: "Cara Scoped"},
+		{Email: "scoped@example.com", Name: "Scoped"},
+	}, scoped)
+	must(t, err)
+	eq(t, skipped, []string{"cara@example.com"}, "skipped outside permitted lists")
+	s, _ = S.Get(ctx, store.SubscriberRef{ID: f.cara.ID})
+	eq(t, s.Name, "Cara", "skipped subscriber unchanged")
+	if _, ok := subStatuses(t, st, f.cara.ID)[f.pubSingle.ID]; ok {
+		t.Errorf("skipped subscriber got subscribed")
+	}
+	s, _ = S.Get(ctx, store.SubscriberRef{ID: f.ben.ID})
+	eq(t, s.Name, "Ben Scoped", "permitted subscriber updated")
+	_, err = S.Get(ctx, store.SubscriberRef{Email: "scoped@example.com"})
+	must(t, err)
+	// The zero scope permits no lists: every existing subscriber is skipped.
+	scoped.Permitted = store.ListScope{}
+	skipped, err = S.Import(ctx, []store.SubscriberInput{{Email: "ben@example.com", Name: "Ben Zero"}}, scoped)
+	must(t, err)
+	eq(t, skipped, []string{"ben@example.com"}, "zero scope skips existing")
+
 	// A batch is atomic: one bad row, nothing written.
-	err = S.Import(ctx, []store.SubscriberInput{{Email: "ok@example.com", Name: "OK"}, {Email: "bad@example.com", Name: "Bad", Status: "nonsense"}},
+	_, err = S.Import(ctx, []store.SubscriberInput{{Email: "ok@example.com", Name: "OK"}, {Email: "bad@example.com", Name: "Bad", Status: "nonsense"}},
 		store.ImportOptions{Mode: store.ImportSubscribe, ListIDs: []int{9999}, SubscriptionStatus: "confirmed", Permitted: all})
 	if err == nil {
 		t.Errorf("import into a missing list: want an error")

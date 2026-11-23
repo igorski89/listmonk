@@ -40,6 +40,37 @@ var steps = []Step{
 			return rebuildUsers(ctx, tx)
 		},
 	},
+	{
+		// What upstream added to its v7.0.0 migration after v7.0.0-beta.2
+		// (the SQLite baseline), with the same semantics: existing values
+		// win, existing installs get signed links off.
+		Name: "upstream-v7.0.0-after-beta.2",
+		Fn: func(ctx context.Context, tx *sqlx.Tx, _ store.MigrationEnv) error {
+			for _, q := range []string{
+				// Upload settings from one key per field to an object each.
+				`INSERT INTO settings (key, value)
+				SELECT 'upload.filesystem', json_patch('{"upload_path": "uploads", "upload_uri": "/uploads"}',
+					(SELECT json_group_object(substr(key, 19), json(value)) FROM settings WHERE key LIKE 'upload.filesystem.%'))
+				WHERE true
+				ON CONFLICT (key) DO UPDATE SET value = json_patch(excluded.value, settings.value)`,
+				`DELETE FROM settings WHERE key LIKE 'upload.filesystem.%'`,
+				`INSERT INTO settings (key, value)
+				SELECT 'upload.s3', json_patch('{"url": "https://ap-south-1.s3.amazonaws.com", "public_url": "", "aws_access_key_id": "", "aws_secret_access_key": "", "aws_default_region": "ap-south-1", "bucket": "", "bucket_domain": "", "bucket_path": "/", "bucket_type": "public", "expiry": "167h"}',
+					(SELECT json_group_object(substr(key, 11), json(value)) FROM settings WHERE key LIKE 'upload.s3.%'))
+				WHERE true
+				ON CONFLICT (key) DO UPDATE SET value = json_patch(excluded.value, settings.value)`,
+				`DELETE FROM settings WHERE key LIKE 'upload.s3.%'`,
+				`INSERT INTO settings (key, value) VALUES ('upload.max_file_size', '25000') ON CONFLICT (key) DO NOTHING`,
+				`INSERT INTO settings (key, value) VALUES ('security.signed_links', '{"enabled": false, "ttl": "120d"}') ON CONFLICT (key) DO NOTHING`,
+				`INSERT INTO settings (key, value) VALUES ('app.enable_public_subscription_api', 'false') ON CONFLICT (key) DO NOTHING`,
+			} {
+				if _, err := tx.ExecContext(ctx, q); err != nil {
+					return wrap(err)
+				}
+			}
+			return setSecretKey(ctx, tx)
+		},
+	},
 }
 
 func listRoleCascades(ctx context.Context, q sqlx.QueryerContext) (bool, error) {

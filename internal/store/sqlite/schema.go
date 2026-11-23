@@ -2,6 +2,8 @@ package sqlite
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -55,6 +57,9 @@ func (s schema) Install(ctx context.Context, version string, env store.Migration
 	if _, err := tx.ExecContext(ctx, schemaSQL); err != nil {
 		return wrap(err)
 	}
+	if err := setSecretKey(ctx, tx); err != nil {
+		return err
+	}
 	if err := recordVersion(ctx, tx, version); err != nil {
 		return err
 	}
@@ -83,6 +88,19 @@ func (s schema) Version(ctx context.Context) (string, error) {
 		return v, wrap(err)
 	}
 	return v, nil
+}
+
+// setSecretKey sets internal.secret_key (URL signing) to 32 random bytes,
+// hex, if it is empty or missing.
+func setSecretKey(ctx context.Context, tx *sqlx.Tx) error {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		return err
+	}
+	key, _ := json.Marshal(hex.EncodeToString(b))
+	_, err := tx.ExecContext(ctx, `INSERT INTO settings (key, value) VALUES ('internal.secret_key', ?)
+		ON CONFLICT (key) DO UPDATE SET value = excluded.value WHERE settings.value IN ('""', 'null', '')`, string(key))
+	return wrap(err)
 }
 
 // ledgerSQL creates the step ledger on databases installed before it

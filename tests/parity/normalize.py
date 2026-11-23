@@ -32,6 +32,9 @@ ASSETV = re.compile(r"\?v=[0-9a-f]{6,}")
 # Permission lists come from Go map iteration: order is random.
 PERM_JSON = re.compile(r'\[(\s*"[a-z_]+:[a-z_]+",?\s*)+\]')
 PERM_PG = re.compile(r'\{([a-z_]+:[a-z_]+,?)+\}')
+# Signed links (upstream after v7.0.0-beta.2): the expiry is a timestamp
+# and the signature depends on it and on the install's random key.
+SIGNED = re.compile(r"\b(exp=)\d+|\b(sig=)[A-Za-z0-9_-]{20,}")
 DURATION = re.compile(r"\"(uptime|time_taken)\":\s*\"?[^,}\"]*\"?")
 
 
@@ -69,6 +72,7 @@ def main():
             s = SRCLOC.sub(r"\1:<line>", s)
             s = PERM_JSON.sub(lambda m: "[" + ", ".join(sorted(re.findall(r'"[a-z_]+:[a-z_]+"', m.group(0)))) + "]", s)
             s = PERM_PG.sub(lambda m: "{" + ",".join(sorted(m.group(0)[1:-1].split(","))) + "}", s)
+            s = SIGNED.sub(lambda m: (m.group(1) or m.group(2)) + "<v>", s)
             s = DURATION.sub(r'"\1": <dur>', s)
             os.makedirs(os.path.join(out, part), exist_ok=True)
             with open(os.path.join(out, part, name), "w") as f:

@@ -105,7 +105,7 @@ func (c *Core) UpdateUser(id int, u auth.User) (auth.User, error) {
 	return out, err
 }
 
-// UpdateUserProfile updates the basic fields of a given uesr (name, email, password).
+// UpdateUserProfile updates the name and password of a given user.
 func (c *Core) UpdateUserProfile(id int, u auth.User) (auth.User, error) {
 	if err := c.st.Users().UpdateProfile(bg, id, u); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
@@ -127,6 +127,11 @@ func (c *Core) UpdateUserLogin(id int, avatar string) error {
 	}
 
 	return nil
+}
+
+// UpdateUserEmail changes a verified e-mail.
+func (c *Core) UpdateUserEmail(id int, oldEmail, email string) error {
+	return c.st.Users().UpdateEmail(bg, id, oldEmail, email)
 }
 
 // SetTwoFA sets or clears the 2FA configuration for a user.

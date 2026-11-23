@@ -98,6 +98,7 @@ type SessionOpt struct {
 	OverwriteSubStatus bool   `json:"overwrite_subscription_status"`
 	Delim              string `json:"delim"`
 	ListIDs            []int  `json:"lists"`
+	PermittedListIDs   []int  `json:"-"`
 }
 
 // Status represents statistics from an ongoing import session.
@@ -290,10 +291,23 @@ func (s *Session) Start() {
 		SubscriptionStatus: s.opt.SubStatus,
 		OverwriteUserInfo:  s.opt.OverwriteUserInfo,
 		OverwriteSubStatus: s.opt.OverwriteSubStatus,
-		Permitted:          store.ListScope{All: true},
+		Permitted:          store.ListScope{All: s.opt.PermittedListIDs == nil, IDs: s.opt.PermittedListIDs},
 	}
 	if s.opt.Mode == ModeBlocklist {
 		opt.Mode = store.ImportBlocklist
+	}
+
+	// commit imports the batch; existing subscribers outside the permitted
+	// lists are skipped, logged and not counted.
+	commit := func() (int, error) {
+		skipped, err := s.im.opt.Subscribers.Import(ctx, batch, opt)
+		if err != nil {
+			return 0, err
+		}
+		for _, e := range skipped {
+			s.log.Printf("skipping '%s': subscriber outside permitted lists", e)
+		}
+		return len(batch) - len(skipped), nil
 	}
 
 	for sub := range s.subQueue {
@@ -303,11 +317,14 @@ func (s *Session) Start() {
 
 		// Batch size is met. Commit.
 		if cur%commitBatchSize == 0 {
-			if err = s.im.opt.Subscribers.Import(ctx, batch, opt); err != nil {
+			n, cerr := commit()
+			if cerr != nil {
+				err = cerr
 				s.log.Printf("error executing insert: %v", err)
 				break
 			}
-			s.im.incrementImportCount(cur)
+			total -= cur - n
+			s.im.incrementImportCount(n)
 			s.log.Printf("imported %d", total)
 
 			cur = 0
@@ -324,13 +341,14 @@ func (s *Session) Start() {
 
 	// Queue's closed and there are records left to commit.
 	if cur > 0 {
-		if err := s.im.opt.Subscribers.Import(ctx, batch, opt); err != nil {
+		n, err := commit()
+		if err != nil {
 			s.im.setStatus(StatusFailed)
 			s.log.Printf("error committing to DB: %v", err)
 			s.im.sendNotif(StatusFailed)
 			return
 		}
-		s.im.incrementImportCount(cur)
+		s.im.incrementImportCount(n)
 	}
 
 	s.im.setStatus(StatusFinished)

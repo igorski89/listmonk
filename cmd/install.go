@@ -155,7 +155,7 @@ func installSubs(defListID, optinListID int, st lmstore.Store) {
 
 	// Sample subscriber.
 	opt.ListIDs = []int{defListID}
-	if err := st.Subscribers().Import(ctx, []lmstore.SubscriberInput{{
+	if _, err := st.Subscribers().Import(ctx, []lmstore.SubscriberInput{{
 		Email:   "john@example.com",
 		Name:    "John Doe",
 		Attribs: models.JSON{"type": "known", "good": true, "city": "Bengaluru"},
@@ -164,7 +164,7 @@ func installSubs(defListID, optinListID int, st lmstore.Store) {
 	}
 
 	opt.ListIDs = []int{optinListID}
-	if err := st.Subscribers().Import(ctx, []lmstore.SubscriberInput{{
+	if _, err := st.Subscribers().Import(ctx, []lmstore.SubscriberInput{{
 		Email:   "anon@example.com",
 		Name:    "Anon Doe",
 		Attribs: models.JSON{"type": "unknown", "good": true, "city": "Bengaluru"},

@@ -3,9 +3,12 @@ package sqlite_test
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"io"
 	"log"
 	"path/filepath"
+	"reflect"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -129,8 +132,8 @@ func TestFixupListRole(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(p) != 1 || p[0] != "fork-users-list-role-set-null" {
-		t.Fatalf("pending = %v, want [fork-users-list-role-set-null]", p)
+	if len(p) == 0 || p[0] != "fork-users-list-role-set-null" {
+		t.Fatalf("pending = %v, want fork-users-list-role-set-null first", p)
 	}
 	for i := 0; i < 2; i++ {
 		if err := st.Schema().Migrate(ctx, env, false); err != nil {
@@ -286,5 +289,90 @@ func TestFixupListRoleColumnGuard(t *testing.T) {
 	db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('users') WHERE name = 'extra'`).Scan(&n)
 	if n != 1 {
 		t.Errorf("column extra lost")
+	}
+}
+
+// TestStepUpstreamAfterBeta2 upgrades the settings of a v7.0.0-beta.2
+// install (one key per upload field, no signing settings) the way
+// upstream's final v7.0.0 migration does.
+func TestStepUpstreamAfterBeta2(t *testing.T) {
+	ctx := context.Background()
+	lo := log.New(io.Discard, "", 0)
+	env := store.MigrationEnv{Log: lo}
+	path := filepath.Join(t.TempDir(), "listmonk.db")
+	st, err := sqlite.Open(path, lo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Schema().Install(ctx, "v7.0.0", env); err != nil {
+		t.Fatal(err)
+	}
+	st.Close()
+
+	db, err := sql.Open("sqlite", "file:"+path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	for _, q := range []string{
+		`DROP TABLE schema_migrations`,
+		`DELETE FROM settings WHERE key IN ('upload.filesystem', 'upload.s3', 'security.signed_links',
+			'app.enable_public_subscription_api', 'internal.secret_key')`,
+		`UPDATE settings SET value = '5000' WHERE key = 'upload.max_file_size'`,
+		`INSERT INTO settings (key, value) VALUES ('upload.filesystem.upload_path', '"media"'),
+			('upload.filesystem.upload_uri', '"/uploads"'), ('upload.s3.bucket', '"mybucket"'), ('upload.s3.expiry', '"24h"')`,
+	} {
+		if _, err := db.Exec(q); err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+	}
+
+	st, err = sqlite.Open(path, lo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if err := st.Schema().Migrate(ctx, env, false); err != nil {
+		t.Fatal(err)
+	}
+
+	get := func(key string) any {
+		t.Helper()
+		var raw string
+		if err := db.QueryRow(`SELECT value FROM settings WHERE key = ?`, key).Scan(&raw); err != nil {
+			t.Fatalf("%s: %v", key, err)
+		}
+		var v any
+		if err := json.Unmarshal([]byte(raw), &v); err != nil {
+			t.Fatalf("%s: %v", key, err)
+		}
+		return v
+	}
+	want := map[string]any{
+		"upload.filesystem":                  map[string]any{"upload_path": "media", "upload_uri": "/uploads"},
+		"upload.max_file_size":               float64(5000),
+		"security.signed_links":              map[string]any{"enabled": false, "ttl": "120d"},
+		"app.enable_public_subscription_api": false,
+	}
+	for k, w := range want {
+		if got := get(k); !reflect.DeepEqual(got, w) {
+			t.Errorf("%s = %v, want %v", k, got, w)
+		}
+	}
+	s3 := get("upload.s3").(map[string]any)
+	if s3["bucket"] != "mybucket" || s3["expiry"] != "24h" || s3["aws_default_region"] != "ap-south-1" {
+		t.Errorf("upload.s3 = %v: want existing values over the defaults", s3)
+	}
+	var n int
+	db.QueryRow(`SELECT COUNT(*) FROM settings WHERE key LIKE 'upload.filesystem.%' OR key LIKE 'upload.s3.%'`).Scan(&n)
+	if n != 0 {
+		t.Errorf("%d per-field upload keys left", n)
+	}
+	if key, _ := get("internal.secret_key").(string); !regexp.MustCompile(`^[0-9a-f]{64}$`).MatchString(key) {
+		t.Errorf("internal.secret_key = %q, want 32 random bytes in hex", key)
+	}
+	// The app reads them (and would refuse to start without the key).
+	if _, err := st.Settings().All(ctx); err != nil {
+		t.Fatal(err)
 	}
 }

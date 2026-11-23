@@ -2,7 +2,9 @@ package sqlite
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -486,8 +488,10 @@ func (s subscribers) UpdateWithLists(ctx context.Context, id int, in store.Subsc
 	return s.Get(ctx, store.SubscriberRef{ID: id})
 }
 
-func (s subscribers) Import(ctx context.Context, rows []store.SubscriberInput, o store.ImportOptions) error {
-	return s.inTx(ctx, func(tx *sqlx.Tx) error {
+func (s subscribers) Import(ctx context.Context, rows []store.SubscriberInput, o store.ImportOptions) ([]string, error) {
+	var skipped []string
+	err := s.inTx(ctx, func(tx *sqlx.Tx) error {
+		skipped = skipped[:0]
 		t := now()
 		for _, r := range rows {
 			uu, err := uuid.NewV4()
@@ -511,13 +515,23 @@ func (s subscribers) Import(ctx context.Context, rows []store.SubscriberInput, o
 				continue
 			}
 
-			if err := tx.GetContext(ctx, &sub, `INSERT INTO subscribers (uuid, email, name, attribs, status, created_at, updated_at)
+			// An existing subscriber outside the permitted lists isn't
+			// updated, so no row comes back.
+			err = tx.GetContext(ctx, &sub, `INSERT INTO subscribers (uuid, email, name, attribs, status, created_at, updated_at)
 				VALUES (?1, ?2, ?3, ?4, 'enabled', ?6, ?6)
 				ON CONFLICT (email) DO UPDATE SET
 					name = (CASE WHEN ?5 THEN ?3 ELSE subscribers.name END),
 					attribs = (CASE WHEN ?5 THEN ?4 ELSE subscribers.attribs END),
 					updated_at = ?6
-				RETURNING id, status`, uu.String(), r.Email, r.Name, jsonText(attribsOr(r.Attribs)), o.OverwriteUserInfo, t); err != nil {
+				WHERE ?7 OR EXISTS (SELECT 1 FROM subscriber_lists sl
+					WHERE sl.subscriber_id = subscribers.id AND sl.list_id IN (SELECT value FROM json_each(?8)))
+				RETURNING id, status`, uu.String(), r.Email, r.Name, jsonText(attribsOr(r.Attribs)), o.OverwriteUserInfo, t,
+				o.Permitted.All, ints(o.Permitted.IDs))
+			if errors.Is(err, sql.ErrNoRows) {
+				skipped = append(skipped, r.Email)
+				continue
+			}
+			if err != nil {
 				return wrap(err)
 			}
 			status := o.SubscriptionStatus
@@ -536,6 +550,10 @@ func (s subscribers) Import(ctx context.Context, rows []store.SubscriberInput, o
 		}
 		return nil
 	})
+	if err != nil {
+		return nil, err
+	}
+	return skipped, nil
 }
 
 func blocklistIDs(ctx context.Context, tx *sqlx.Tx, ids []int) error {
@@ -722,7 +740,8 @@ func (s subscriptions) ConfirmOptin(ctx context.Context, subUUID string, listUUI
 	}
 	_, err := s.w.ExecContext(ctx, `UPDATE subscriber_lists SET status = 'confirmed', meta = json_patch(meta, ?3), updated_at = ?4
 		WHERE subscriber_id = (SELECT id FROM subscribers WHERE uuid = ?1)
-		AND list_id IN (SELECT id FROM lists WHERE uuid IN (SELECT value FROM json_each(?2)))`,
+		AND list_id IN (SELECT id FROM lists WHERE uuid IN (SELECT value FROM json_each(?2)))
+		AND status = 'unconfirmed'`,
 		subUUID, strs(listUUIDs), jsonText(meta), now())
 	return wrap(err)
 }

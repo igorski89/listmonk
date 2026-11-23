@@ -275,7 +275,8 @@ func TestConcurrent(t *testing.T) {
 		for j := range rows {
 			rows[j] = store.SubscriberInput{Email: fmt.Sprintf("s%d-%d@example.com", i, j), Name: "S"}
 		}
-		return st.Subscribers().Import(ctx, rows, store.ImportOptions{Mode: store.ImportSubscribe, ListIDs: []int{l.ID}, SubscriptionStatus: "confirmed", Permitted: store.ListScope{All: true}})
+		_, err := st.Subscribers().Import(ctx, rows, store.ImportOptions{Mode: store.ImportSubscribe, ListIDs: []int{l.ID}, SubscriptionStatus: "confirmed", Permitted: store.ListScope{All: true}})
+		return err
 	})
 	run("views", func(i int) error { return st.Tracking().RegisterView(ctx, camp.UUID, "") })
 	run("query", func(i int) error {

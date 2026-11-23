@@ -2,6 +2,7 @@ package storetest
 
 import (
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 
@@ -114,10 +115,20 @@ func testUsers(t *testing.T, st store.Store) {
 	must(t, U.UpdateProfile(ctx, edID, auth.User{Name: "Eddie", Email: null.StringFrom("eddie@example.com"), PasswordLogin: true, Password: null.StringFrom("")}))
 	u, _ = U.Get(ctx, store.UserRef{ID: edID})
 	eq(t, u.Name, "Eddie", "profile name")
-	eq(t, u.Email.String, "eddie@example.com", "profile email")
+	eq(t, u.Email.String, "ed@example.com", "profile doesn't change the e-mail (upstream: verified via UpdateEmail)")
 	_, err = U.Login(ctx, "editor", "newpass1234")
 	must(t, err)
 	isErr(t, U.UpdateProfile(ctx, 9999, auth.User{Name: "x", PasswordLogin: true}), store.ErrNotFound, "profile missing")
+
+	// Verified e-mail change: only from the e-mail it was verified for.
+	isErr(t, U.UpdateEmail(ctx, edID, "stale@example.com", "eddie@example.com"), store.ErrNotFound, "e-mail changed meanwhile")
+	must(t, U.UpdateEmail(ctx, edID, "ed@example.com", "eddie@example.com"))
+	u, _ = U.Get(ctx, store.UserRef{ID: edID})
+	eq(t, u.Email.String, "eddie@example.com", "verified e-mail change")
+	var ce *store.ConflictError
+	if err := U.UpdateEmail(ctx, edID, "eddie@example.com", "admin@example.com"); !errors.As(err, &ce) {
+		t.Errorf("e-mail of another user: got %v, want a ConflictError", err)
+	}
 
 	must(t, U.RecordLogin(ctx, edID, "https://example.com/a.png"))
 	u, _ = U.Get(ctx, store.UserRef{ID: edID})

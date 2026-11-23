@@ -115,6 +115,7 @@ SELECT id from sub;
 -- name: upsert-subscriber
 -- Upserts a subscriber where existing subscribers get their names and attributes overwritten.
 -- If $7 = true, update name/attribs. If $8 = true, update subscription status.
+-- $9 restricts existing subscribers to manageable lists; NULL permits all lists.
 WITH sub AS (
     INSERT INTO subscribers as s (uuid, email, name, attribs, status)
     VALUES($1, $2, $3, $4, 'enabled')
@@ -123,6 +124,10 @@ WITH sub AS (
         name=(CASE WHEN $7 THEN $3 ELSE s.name END),
         attribs=(CASE WHEN $7 THEN $4 ELSE s.attribs END),
         updated_at=NOW()
+    WHERE $9::INT[] IS NULL OR EXISTS (
+        SELECT 1 FROM subscriber_lists
+        WHERE subscriber_id = s.id AND list_id = ANY($9::INT[])
+    )
     RETURNING uuid, id, status
 ),
 subs AS (
@@ -237,7 +242,8 @@ listIDs AS (
     SELECT id FROM lists WHERE uuid = ANY($2::UUID[])
 )
 UPDATE subscriber_lists SET status='confirmed', meta=meta || $3, updated_at=NOW()
-    WHERE subscriber_id = (SELECT id FROM subID) AND list_id = ANY(SELECT id FROM listIDs);
+    WHERE subscriber_id = (SELECT id FROM subID) AND list_id = ANY(SELECT id FROM listIDs)
+        AND status = 'unconfirmed';
 
 -- name: unsubscribe-subscribers-from-lists
 WITH listIDs AS (

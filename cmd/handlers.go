@@ -246,6 +246,7 @@ func initHTTPHandlers(e *echo.Echo, a *App) {
 
 		g.GET("/api/profile", a.GetUserProfile)
 		g.PUT("/api/profile", a.UpdateUserProfile)
+		g.POST("/api/profile/email", a.RequestEmailChange)
 		g.GET("/api/users", pm(a.GetUsers, auth.PermUsersGet))
 		g.GET("/api/users/:id", pm(hasID(a.GetUser), auth.PermUsersGet))
 		g.POST("/api/users", pm(a.CreateUser, auth.PermUsersManage))
@@ -296,6 +297,8 @@ func initHTTPHandlers(e *echo.Echo, a *App) {
 		g.POST(path.Join(uriAdmin, "/login/twofa"), a.adminPage(a.TwofaPage))
 		g.GET(path.Join(uriAdmin, "/forgot"), a.adminPage(a.ForgotPage))
 		g.POST(path.Join(uriAdmin, "/forgot"), a.adminPage(a.ForgotPage))
+		g.GET(path.Join(uriAdmin, "/verify-email"), a.VerifyEmail)
+		g.POST(path.Join(uriAdmin, "/verify-email"), a.VerifyEmail)
 		g.GET(path.Join(uriAdmin, "/reset"), a.adminPage(a.ResetPage))
 		g.POST(path.Join(uriAdmin, "/reset"), a.adminPage(a.ResetPage))
 
@@ -316,14 +319,14 @@ func initHTTPHandlers(e *echo.Echo, a *App) {
 		// Public subscriber facing views.
 		g.GET("/subscription/form", a.SubscriptionFormPage)
 		g.POST("/subscription/form", a.SubscriptionForm)
-		g.GET("/subscription/:campUUID/:subUUID", noIndex(a.hasUUID(a.hasSub(a.SubscriptionPage), "campUUID", "subUUID")))
-		g.POST("/subscription/:campUUID/:subUUID", a.hasUUID(a.hasSub(a.SubscriptionPrefs), "campUUID", "subUUID"))
-		g.GET("/subscription/optin/:subUUID", noIndex(a.hasUUID(a.hasSub(a.OptinPage), "subUUID")))
-		g.POST("/subscription/optin/:subUUID", a.hasUUID(a.hasSub(a.OptinPage), "subUUID"))
-		g.POST("/subscription/export/:subUUID", a.hasUUID(a.hasSub(a.SelfExportSubscriberData), "subUUID"))
-		g.POST("/subscription/wipe/:subUUID", a.hasUUID(a.hasSub(a.WipeSubscriberData), "subUUID"))
+		g.GET("/subscription/:campUUID/:subUUID", noIndex(a.hasUUID(a.hasSignedURL(a.hasSub(a.SubscriptionPage)), "campUUID", "subUUID")))
+		g.POST("/subscription/:campUUID/:subUUID", a.hasUUID(a.hasSignedURL(a.hasSub(a.SubscriptionPrefs)), "campUUID", "subUUID"))
+		g.GET("/subscription/optin/:subUUID", noIndex(a.hasUUID(a.hasSignedURL(a.hasSub(a.OptinPage)), "subUUID")))
+		g.POST("/subscription/optin/:subUUID", a.hasUUID(a.hasSignedURL(a.hasSub(a.OptinPage)), "subUUID"))
+		g.POST("/subscription/export/:subUUID", a.hasUUID(a.hasManageLink(a.hasSub(a.SelfExportSubscriberData)), "subUUID"))
+		g.POST("/subscription/wipe/:subUUID", a.hasUUID(a.hasManageLink(a.hasSub(a.WipeSubscriberData)), "subUUID"))
 		g.GET("/link/:linkUUID/:campUUID/:subUUID", noIndex(a.hasUUID(a.LinkRedirect, "linkUUID", "campUUID", "subUUID")))
-		g.GET("/campaign/:campUUID/:subUUID", noIndex(a.hasUUID(a.ViewCampaignMessage, "campUUID", "subUUID")))
+		g.GET("/campaign/:campUUID/:subUUID", noIndex(a.hasUUID(a.hasSignedURL(a.ViewCampaignMessage), "campUUID", "subUUID")))
 		g.GET("/campaign/:campUUID/:subUUID/px.png", noIndex(a.hasUUID(a.RegisterCampaignView, "campUUID", "subUUID")))
 
 		if a.cfg.EnablePublicArchive {
@@ -415,26 +418,45 @@ func (a *App) hasUUID(next echo.HandlerFunc, params ...string) echo.HandlerFunc 
 	}
 }
 
-// hasID middleware validates the :id param in the URL and sets its int value in the context.
-func hasID(next echo.HandlerFunc) echo.HandlerFunc {
+// hasSignedURL validates signature in external subscriber links such as unsub and preference pages.
+func (a *App) hasSignedURL(next echo.HandlerFunc) echo.HandlerFunc {
 	return func(c *echo.Context) error {
-		id, _ := strconv.Atoi(c.Param("id"))
-		if id < 1 {
-			return echo.NewHTTPError(http.StatusBadRequest, "invalid ID")
-		}
+		c.Response().Header().Set("Referrer-Policy", "no-referrer")
+		c.Response().Header().Set("Cache-Control", "no-store")
 
-		c.Set("id", id)
+		// Signatures cover listmonk's canonical paths without the root URL prefix.
+		expiry, ok := a.urlCfg.Signer.Verify(c.Request().URL)
+		if !ok {
+			return c.Render(http.StatusForbidden, tplMessage,
+				makeMsgTpl(a.i18n.T("globals.terms.error"), "", a.i18n.T("users.invalidRequest")))
+		}
+		c.Set("linkExpiry", expiry)
 		return next(c)
 	}
 }
 
-// hasSub middleware checks if a subscriber exists given the UUID
-// param in a request.
+// hasManageLink validates the temp management page link e-mailed by sendSubManageLink()
+// for destructive actions (wipe, export).
+func (a *App) hasManageLink(next echo.HandlerFunc) echo.HandlerFunc {
+	return func(c *echo.Context) error {
+		c.Response().Header().Set("Referrer-Policy", "no-referrer")
+		c.Response().Header().Set("Cache-Control", "no-store")
+
+		if !a.hasManageAuth(c) {
+			return c.Render(http.StatusForbidden, tplMessage,
+				makeMsgTpl(a.i18n.T("globals.terms.error"), "", a.i18n.T("users.invalidRequest")))
+		}
+		return next(c)
+	}
+}
+
+// hasSub loads the subscriber identified by the UUID param into the context.
 func (a *App) hasSub(next echo.HandlerFunc) echo.HandlerFunc {
 	return func(c *echo.Context) error {
 		subUUID := c.Param("subUUID")
 
-		if _, err := a.core.GetSubscriber(0, subUUID, ""); err != nil {
+		sub, err := a.core.GetSubscriber(0, subUUID, "")
+		if err != nil {
 			if er, ok := err.(*echo.HTTPError); ok && er.Code == http.StatusBadRequest {
 				return c.Render(http.StatusNotFound, tplMessage,
 					makeMsgTpl(a.i18n.T("globals.terms.notFound"), "", er.Message))
@@ -445,6 +467,7 @@ func (a *App) hasSub(next echo.HandlerFunc) echo.HandlerFunc {
 				makeMsgTpl(a.i18n.T("globals.terms.error"), "", a.i18n.T("public.errorProcessingRequest")))
 		}
 
+		c.Set("subscriber", sub)
 		return next(c)
 	}
 }
@@ -456,6 +479,19 @@ func (a *App) handleHTTPErr(c *echo.Context, err error) {
 	}
 
 	echo.DefaultHTTPErrorHandler(false)(c, err)
+}
+
+// hasID middleware validates the :id param in the URL and sets its int value in the context.
+func hasID(next echo.HandlerFunc) echo.HandlerFunc {
+	return func(c *echo.Context) error {
+		id, _ := strconv.Atoi(c.Param("id"))
+		if id < 1 {
+			return echo.NewHTTPError(http.StatusBadRequest, "invalid ID")
+		}
+
+		c.Set("id", id)
+		return next(c)
+	}
 }
 
 // noIndex adds the HTTP header requesting robots to not crawl the page.
@@ -500,6 +536,7 @@ func trustedURLsToCORSOrigins(urls []string) []string {
 // renderSandboxedHTML executes the HTML rendering handler with CSP sandboxing headers (for iframes).
 func renderSandboxedHTML(c *echo.Context, body string) error {
 	c.Response().Header().Add("Content-Security-Policy", "sandbox allow-scripts allow-popups allow-popups-to-escape-sandbox")
+	c.Response().Header().Set("X-Content-Type-Options", "nosniff")
 	return c.HTML(http.StatusOK, body)
 }
 

@@ -334,12 +334,18 @@ func (s subscribers) UpdateWithLists(ctx context.Context, id int, in store.Subsc
 	return s.Get(ctx, store.SubscriberRef{ID: id})
 }
 
-func (s subscribers) Import(ctx context.Context, rows []store.SubscriberInput, o store.ImportOptions) error {
+func (s subscribers) Import(ctx context.Context, rows []store.SubscriberInput, o store.ImportOptions) ([]string, error) {
 	tx, err := s.db.BeginTxx(ctx, nil)
 	if err != nil {
-		return wrap(err)
+		return nil, wrap(err)
 	}
 	defer tx.Rollback()
+
+	// NULL permits all; an empty array none.
+	var permitted any
+	if !o.Permitted.All {
+		permitted = pq.Array(append([]int{}, o.Permitted.IDs...))
+	}
 
 	var stmt *sqlx.Stmt
 	if o.Mode == store.ImportBlocklist {
@@ -348,21 +354,29 @@ func (s subscribers) Import(ctx context.Context, rows []store.SubscriberInput, o
 		stmt = tx.StmtxContext(ctx, s.q.UpsertSubscriber)
 	}
 
+	var skipped []string
 	for _, r := range rows {
 		uu, err := uuid.NewV4()
 		if err != nil {
-			return err
+			return nil, err
 		}
 		if o.Mode == store.ImportBlocklist {
 			_, err = stmt.ExecContext(ctx, uu, r.Email, r.Name, r.Attribs)
-		} else {
-			_, err = stmt.ExecContext(ctx, uu, r.Email, r.Name, r.Attribs, pq.Array(o.ListIDs), o.SubscriptionStatus, o.OverwriteUserInfo, o.OverwriteSubStatus)
+			if err != nil {
+				return nil, wrap(err)
+			}
+			continue
 		}
+		res, err := stmt.ExecContext(ctx, uu, r.Email, r.Name, r.Attribs, pq.Array(o.ListIDs), o.SubscriptionStatus, o.OverwriteUserInfo, o.OverwriteSubStatus, permitted)
 		if err != nil {
-			return wrap(err)
+			return nil, wrap(err)
+		}
+		// No row: an existing subscriber outside the permitted lists.
+		if n, _ := res.RowsAffected(); n == 0 {
+			skipped = append(skipped, r.Email)
 		}
 	}
-	return wrap(tx.Commit())
+	return skipped, wrap(tx.Commit())
 }
 
 func (s subscribers) Blocklist(ctx context.Context, ids []int) error {

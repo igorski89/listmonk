@@ -176,6 +176,10 @@ func testCampaigns(t *testing.T, st store.Store) {
 	must(t, err)
 	eq(t, got.ID, one.ID, "get by uuid")
 	eq(t, got.TemplateBody, `[{{ template "content" . }}]`, "campaign template body")
+	eq(t, got.ListUUIDs, []string{f.pubDouble.UUID, f.privSingle.UUID}, "list UUIDs, by list ID")
+	pv, err := C.GetForPreview(ctx, one.ID, 0)
+	must(t, err)
+	eq(t, pv.ListUUIDs, []string{f.pubDouble.UUID, f.privSingle.UUID}, "preview list UUIDs")
 	got, err = C.Get(ctx, store.CampaignRef{ArchiveSlug: "spring"}, store.TemplateArchive)
 	must(t, err)
 	eq(t, got.ID, one.ID, "get by slug")
@@ -299,6 +303,7 @@ func testSending(t *testing.T, st store.Store) {
 	for _, c := range next {
 		byID[c.ID] = c
 	}
+	eq(t, byID[regular.ID].ListUUIDs, []string{f.pubDouble.UUID, f.privSingle.UUID}, "next: list UUIDs")
 	eq(t, byID[regular.ID].TemplateBody, `{{ template "content" . }}`, "next: template body")
 
 	// Regular: double opt-in list -> confirmed only; single opt-in list ->
