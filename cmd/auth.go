@@ -184,7 +184,7 @@ func (a *App) Logout(c *echo.Context) error {
 	// With OIDC auto-login, the login page would send the user straight back
 	// to the provider, whose own session may log them in again: show the form.
 	if a.cfg.Security.OIDC.Enabled && a.cfg.Security.OIDC.AutoLogin {
-		a.setLoggedOutCookie(c, true)
+		a.setAutoLoginPause(c, time.Hour)
 	}
 
 	// There might be an OIDC logout URL to redirect to.
@@ -210,18 +210,23 @@ func (a *App) OIDCLogin(c *echo.Context) error {
 		return echo.NewHTTPError(http.StatusUnauthorized, a.i18n.T("users.invalidRequest"))
 	}
 
-	return a.redirectToOIDC(c, nonce.Value, c.FormValue("next"))
+	authURL, err := a.oidcAuthURL(c, nonce.Value, c.FormValue("next"))
+	if err != nil {
+		return err
+	}
+
+	// Redirect to the external OIDC provider.
+	return c.Redirect(http.StatusFound, authURL)
 }
 
-// redirectToOIDC sends the browser to the OIDC provider, with the nonce (also
-// in the browser's `nonce` cookie) and the page to return to in the state.
-func (a *App) redirectToOIDC(c *echo.Context, nonce, next string) error {
-	// An explicit login clears the logged-out marker.
-	a.setLoggedOutCookie(c, false)
-
-	// Sanitize the URL and make it relative.
+// oidcAuthURL returns the OIDC provider URL to send the browser to, with the
+// nonce (also in the browser's `nonce` cookie) and the page to return to in
+// the state, and stores the PKCE verifier for the callback.
+func (a *App) oidcAuthURL(c *echo.Context, nonce, next string) (string, error) {
+	// Sanitize the URL and make it relative. Returning to the login page
+	// itself would, with auto-login, start another login.
 	next = utils.SanitizeURI(next)
-	if next == "/" {
+	if next == "/" || isLoginPath(next) {
 		next = uriAdmin
 	}
 
@@ -231,20 +236,33 @@ func (a *App) redirectToOIDC(c *echo.Context, nonce, next string) error {
 	b, err := json.Marshal(state)
 	if err != nil {
 		a.log.Printf("error marshalling OIDC state: %v", err)
-		return echo.NewHTTPError(http.StatusInternalServerError, a.i18n.T("globals.messages.internalError"))
+		return "", echo.NewHTTPError(http.StatusInternalServerError, a.i18n.T("globals.messages.internalError"))
 	}
 
 	authURL, codeVerifier := a.auth.GetOIDCAuthURL(base64.URLEncoding.EncodeToString(b), nonce)
 
 	if authURL == "" {
-		return echo.NewHTTPError(http.StatusInternalServerError, a.i18n.T("globals.messages.internalError"))
+		return "", echo.NewHTTPError(http.StatusInternalServerError, a.i18n.T("globals.messages.internalError"))
 	}
 
 	// Store the verifier for the callback, or clear a stale cookie if PKCE is disabled.
 	a.setOIDCVerifierCookie(c, codeVerifier)
 
-	// Redirect to the external OIDC provider.
-	return c.Redirect(http.StatusFound, authURL)
+	// An explicit login clears the auto-login pause.
+	a.setAutoLoginPause(c, 0)
+
+	return authURL, nil
+}
+
+// isLoginPath tells whether a (sanitized, relative) URI is the login page or
+// the OIDC callback.
+func isLoginPath(uri string) bool {
+	p := uri
+	if i := strings.IndexAny(p, "?#"); i >= 0 {
+		p = p[:i]
+	}
+	p = strings.TrimRight(p, "/")
+	return p == uriAdmin+"/login" || strings.HasPrefix(p, uriAdmin+"/login/") || p == "/auth/oidc"
 }
 
 // setOIDCVerifierCookie stores the PKCE verifier or deletes it if it's empty.
@@ -265,14 +283,16 @@ func (a *App) setOIDCVerifierCookie(c *echo.Context, verifier string) {
 	c.SetCookie(ck)
 }
 
-// oidcLoggedOutCookie marks a browser that has just logged out, so that OIDC
-// auto-login doesn't send it straight back to the provider.
-const oidcLoggedOutCookie = "oidc_logged_out"
+// oidcAutoLoginPauseCookie pauses OIDC auto-login in a browser: after a
+// logout (an hour), so that the provider's session doesn't log the user
+// straight back in, and after a login (a minute), so that a login that
+// doesn't stick (no session cookie) can't loop through the provider.
+const oidcAutoLoginPauseCookie = "oidc_autologin_pause"
 
 // oidcAutoLogin tells whether a GET of the login page should go straight to
 // the OIDC provider: auto-login is on, and the request isn't asking for the
-// password form (?password), carrying an error (?error) or coming right
-// after a logout.
+// password form (?password), carrying an error (?error) or paused (right
+// after a logout or a login).
 func (a *App) oidcAutoLogin(c *echo.Context) bool {
 	o := a.cfg.Security.OIDC
 	if !o.Enabled || !o.AutoLogin {
@@ -282,19 +302,21 @@ func (a *App) oidcAutoLogin(c *echo.Context) bool {
 	if q.Has("password") || q.Has("error") {
 		return false
 	}
-	if ck, err := c.Cookie(oidcLoggedOutCookie); err == nil && ck.Value != "" {
+	if ck, err := c.Cookie(oidcAutoLoginPauseCookie); err == nil && ck.Value != "" {
 		return false
 	}
 	return true
 }
 
 // startOIDCLogin does what the login page's OIDC button does: sets a fresh
-// nonce cookie and redirects to the provider, returning to `next` after.
+// nonce cookie and redirects to the provider, returning to `next` after. If
+// the provider can't be used (e.g. unreachable), it shows the form with the
+// error instead.
 func (a *App) startOIDCLogin(c *echo.Context) error {
 	nonce, err := utils.GenerateRandomString(16)
 	if err != nil {
 		a.log.Printf("error generating OIDC nonce: %v", err)
-		return echo.NewHTTPError(http.StatusInternalServerError, a.i18n.T("globals.messages.internalError"))
+		return a.renderLoginPage(c, echo.NewHTTPError(http.StatusInternalServerError, a.i18n.T("globals.messages.internalError")))
 	}
 	c.SetCookie(&http.Cookie{
 		Name:     "nonce",
@@ -304,23 +326,28 @@ func (a *App) startOIDCLogin(c *echo.Context) error {
 		SameSite: http.SameSiteLaxMode,
 	})
 
-	return a.redirectToOIDC(c, nonce, c.QueryParam("next"))
+	authURL, err := a.oidcAuthURL(c, nonce, c.QueryParam("next"))
+	if err != nil {
+		return a.renderLoginPage(c, err)
+	}
+	return c.Redirect(http.StatusFound, authURL)
 }
 
-// setLoggedOutCookie sets (for an hour) or clears the logged-out marker.
-func (a *App) setLoggedOutCookie(c *echo.Context, on bool) {
+// setAutoLoginPause pauses OIDC auto-login in this browser for d, or ends
+// the pause if d is 0.
+func (a *App) setAutoLoginPause(c *echo.Context, d time.Duration) {
 	ck := &http.Cookie{
-		Name:     oidcLoggedOutCookie,
+		Name:     oidcAutoLoginPauseCookie,
 		HttpOnly: true,
 		Secure:   strings.HasPrefix(a.urlCfg.RootURL, "https://"),
 		Path:     "/",
 		SameSite: http.SameSiteLaxMode,
 	}
-	if on {
+	if d > 0 {
 		ck.Value = "1"
-		ck.MaxAge = 3600
+		ck.MaxAge = int(d.Seconds())
 	} else {
-		if _, err := c.Cookie(oidcLoggedOutCookie); err != nil {
+		if _, err := c.Cookie(oidcAutoLoginPauseCookie); err != nil {
 			return
 		}
 		ck.MaxAge = -1
@@ -421,6 +448,12 @@ func (a *App) OIDCFinish(c *echo.Context) error {
 	// Set the session in the DB and cookie.
 	if err := a.auth.SaveSession(user, oidcToken, c); err != nil {
 		return a.renderLoginPage(c, err)
+	}
+
+	// Pause auto-login briefly: if the session doesn't stick, landing on the
+	// login page again shows the form instead of looping via the provider.
+	if a.cfg.Security.OIDC.AutoLogin {
+		a.setAutoLoginPause(c, time.Minute)
 	}
 
 	// Redirect to the next page.
