@@ -68,7 +68,8 @@ docker run -d --name listmonk -p 9000:9000 -v listmonk-data:/listmonk/data \
   sh -c './listmonk --install --idempotent --yes && exec ./listmonk'
 ```
 
-Then visit `http://localhost:9000`. Pin a tag from the
+Then visit `http://localhost:9000`. `:latest` is the newest release; for
+production, pin a tag from the
 [releases](https://github.com/igorski89/listmonk/releases). Releases are
 pre-releases (`-beta`/`-rc`), and these apply pending migrations when they
 start, so upgrading means switching the tag and restarting.

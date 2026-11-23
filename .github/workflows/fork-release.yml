@@ -1,6 +1,7 @@
 name: Release
 
-# A tag push publishes ghcr.io/<owner>/listmonk:<tag> and a GitHub release.
+# A tag push publishes ghcr.io/<owner>/listmonk:<tag> (also :latest) and a
+# GitHub release.
 # Run by hand with dry_run (the default) to build and upgrade-test a tag or
 # branch without publishing.
 on:
@@ -144,7 +145,9 @@ jobs:
           context: .
           platforms: linux/amd64,linux/arm64
           push: true
-          tags: ${{ env.IMAGE }}:${{ env.TAG }}
+          tags: |
+            ${{ env.IMAGE }}:${{ env.TAG }}
+            ${{ env.IMAGE }}:latest
           build-args: *build-args
           labels: *labels
           cache-from: type=gha
@@ -155,7 +158,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           {
-            echo "Image: \`$IMAGE:$TAG\` (linux/amd64, linux/arm64)"
+            echo "Image: \`$IMAGE:$TAG\` (also \`latest\`; linux/amd64, linux/arm64)"
             echo
             echo "Changes since $PREV:"
             echo
