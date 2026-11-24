@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build the baseline (a git ref, default 6242fd85: the upstream master merged) and the working tree,
+# Build the baseline (a git ref, default e02fe0e3: the upstream master merged) and the working tree,
 # run the parity session on both and diff the normalised outputs.
 #   tests/parity/compare.sh [baseline-ref] [workdir]
 # BACKEND=sqlite runs the working tree on SQLite (the baseline always runs
@@ -8,7 +8,7 @@
 # VERSION=v7.0.0-beta.2 builds both binaries with that version string (the
 # non-final startup path: migrations re-run on boot, version not recorded).
 set -euo pipefail
-REF=${1:-6242fd85}
+REF=${1:-e02fe0e3}
 WORK=${2:-${TMPDIR:-/tmp}/listmonk-parity}
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 HERE=$ROOT/tests/parity

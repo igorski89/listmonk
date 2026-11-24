@@ -10,8 +10,8 @@ history: SGNL `instance/docs/PLAN-listmonk-sqlite.md`.
   a baseline build and this tree into a local Postgres, runs the same API
   session, diffs normalised responses, database dumps and sent mail.
 - Branch `master` (was `sqlite` until 2026-11-23), based on
-  upstream tag `v7.0.0-beta.2`, with upstream master merged at `6242fd85`
-  (2026-11-23, for its security fixes; see "Upstream merges"). Upstream
+  upstream tag `v7.0.0-beta.2`, with upstream master merged at `e02fe0e3`
+  (2026-11-24, for its security fixes; see "Upstream merges"). Upstream
   isn't tracked: changes are merged only when someone asks for a check.
 - CI: `.github/workflows/fork-test.yml` (gofmt, vet, `go test` on SQLite
   and Postgres 18, frontend build) on every push and PR. Upstream's
@@ -317,6 +317,21 @@ exercise:
   begin, failed lazy list load) are worded like their neighbours.
 
 ## Upstream merges
+
+### upstream master `e02fe0e3` (2026-11-24)
+
+5 commits, merged unchanged (no store-layer work needed): login attempts
+throttled per username (10 a minute, then 429; password login only, so
+OIDC and API keys aren't affected); a backslash in the post-login `next`
+is refused; upload limits (no thumbnail for images over 16 megapixels,
+a CSV row size limit, a zip-bomb check, and uploaded import files are
+deleted afterwards); `init()` renamed `initApp()`; one Spanish string.
+The merge also adapts upstream's new importer tests to the fork's
+`subimporter.New(opt, i18n)`.
+
+Parity baseline is now `e02fe0e3`. Postgres: same differences as at
+`6242fd85` (auto-login setting, hidden-input order). SQLite: the output
+is the same as before the merge.
 
 ### upstream master `6242fd85` (2026-11-23)
 

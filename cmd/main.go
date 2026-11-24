@@ -98,7 +98,7 @@ var (
 	appDir string = "."
 )
 
-func init() {
+func initApp() {
 	// Initialize commandline flags.
 	initFlags(ko)
 
@@ -198,6 +198,8 @@ func init() {
 }
 
 func main() {
+	initApp()
+
 	var (
 		// Initialize static global config.
 		cfg = initConstConfig(ko)
